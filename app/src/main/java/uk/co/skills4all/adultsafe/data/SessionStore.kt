@@ -29,6 +29,7 @@ object SessionStore {
         .put("token", session.token)
         .put("user_id", session.userId)
         .put("user_name", session.userName)
+        .put("device_id", session.deviceId)
         .put("roles", JSONArray(session.roles))
         .put("permissions", JSONArray(session.permissions))
 
@@ -40,7 +41,8 @@ object SessionStore {
         } ?: emptyList()
         return AppSession(
             ConnectedSite(json.optString("site_name", url), url, json.optString("api_version", "unknown")),
-            token, json.optString("user_id"), json.optString("user_name"), values("roles"), values("permissions")
+            token, json.optString("user_id"), json.optString("user_name"), values("roles"), values("permissions"),
+            json.optString("device_id")
         )
     }
 

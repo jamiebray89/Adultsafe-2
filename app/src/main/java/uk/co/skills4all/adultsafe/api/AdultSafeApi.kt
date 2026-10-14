@@ -16,7 +16,8 @@ data class AppSession(
     val userId: String,
     val userName: String,
     val roles: List<String>,
-    val permissions: List<String>
+    val permissions: List<String>,
+    val deviceId: String = ""
 )
 
 class AdultSafeConnectionException(message: String) : Exception(message)
@@ -102,7 +103,8 @@ object AdultSafeApi {
             userId = user.optString("id"),
             userName = user.optString("name"),
             roles = user.optJSONArray("roles").strings(),
-            permissions = json.optJSONArray("permissions").strings()
+            permissions = json.optJSONArray("permissions").strings(),
+            deviceId = json.optString("device_id")
         )
     }
 
@@ -151,14 +153,4 @@ object AdultSafeApi {
         }
     }
 
-    // Existing evidence-upload foundation retained. This is not yet a completed upload.
-    suspend fun uploadIdEvidence(
-        site: ConnectedSite, personId: String, token: String, filename: String, bytes: ByteArray
-    ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            require(bytes.isNotEmpty()) { "Evidence file is empty" }
-            require(token.isNotBlank()) { "Missing app token" }
-            "${site.url}$API/people/$personId/id-evidence:$filename"
-        }
-    }
 }

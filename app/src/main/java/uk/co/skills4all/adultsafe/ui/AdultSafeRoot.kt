@@ -319,20 +319,20 @@ fun AdultSafeRoot() {
                                 }
                                 Tab.People -> LivePeopleList(shown, loading, filter, filter.isNotBlank(),
                                     onClearFilter = { filter = "" }, onSelect = { selected = it },
+                                    ready = isDemo || data != null,
                                     onCreate = if (!isDemo && (session?.permissions?.contains("people.write") == true || session?.roles?.contains("manager") == true)) { { showCreate = true } } else null)
                                 Tab.Alerts -> {
                                     val alerts = if (isDemo) DemoRepository.alerts().map {
                                         LiveAlert(it.title, it.body, it.tone.name, it.personId.orEmpty())
                                     } else data?.alerts.orEmpty()
-                                    LiveAlerts(alerts, visible, onPerson = { selected = it })
+                                    LiveAlerts(alerts, visible, ready = isDemo || data != null, onPerson = { selected = it })
                                 }
                                 Tab.Docs -> {
-                                    val ids = if (isDemo) emptySet() else data?.alerts.orEmpty()
-                                        .filter { it.title.contains("document", true) || it.title.contains("signing", true) }
-                                        .map { it.personId }.toSet()
+                                    val ids = if (isDemo) emptySet() else data?.documentPersonIds.orEmpty()
                                     LivePeopleList(if (isDemo) visible else visible.filter { it.id in ids }, loading, "", false,
                                         onClearFilter = {}, onSelect = { selected = it }, title = "Documents",
-                                        subtitle = "People with outstanding documents or signing actions")
+                                        subtitle = "People with outstanding documents or signing actions",
+                                        ready = isDemo || data != null)
                                 }
                                 Tab.Settings -> LiveSettings(
                                     title = displayTitle, url = if (isDemo) "" else session?.site?.url.orEmpty(),
@@ -393,7 +393,8 @@ private fun LivePeopleList(
     people: List<LivePerson>, loading: Boolean, filter: String, filtered: Boolean,
     onClearFilter: () -> Unit, onSelect: (LivePerson) -> Unit,
     title: String = "People", subtitle: String = "Volunteers and parents from your AdultSafe site",
-    onCreate: (() -> Unit)? = null
+    onCreate: (() -> Unit)? = null,
+    ready: Boolean = true
 ) {
     var search by remember { mutableStateOf("") }
     val matches = people.filter {
@@ -408,7 +409,9 @@ private fun LivePeopleList(
         item { Text(subtitle, color = AdultSafeMuted) }
         if (filtered) item { TextButton(onClick = onClearFilter) { Text("Clear filter: " + filter) } }
         item { OutlinedTextField(search, { search = it }, label = { Text("Search people") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
-        if (matches.isEmpty() && !loading) item { MessageCard("No matching records", "Try a different search or clear the filter.") }
+        if (matches.isEmpty() && !loading && ready) item {
+            MessageCard("No matching records", "Try another search or clear the filter. The WordPress site returned no matching people.")
+        }
         items(matches, key = { it.id }) { p ->
             Card(onClick = { onSelect(p) }, modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -431,10 +434,10 @@ private fun LivePeopleList(
 }
 
 @Composable
-private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, onPerson: (LivePerson) -> Unit) {
+private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, ready: Boolean, onPerson: (LivePerson) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("Alerts", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
-        if (alerts.isEmpty()) item { MessageCard("No alerts", "There are no current alerts for this site.") }
+        if (alerts.isEmpty() && ready) item { MessageCard("No alerts", "There are no current alerts for this site.") }
         items(alerts) { a ->
             Card(onClick = { people.firstOrNull { it.id == a.personId }?.let(onPerson) },
                 colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {

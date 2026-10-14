@@ -28,6 +28,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
+import uk.co.skills4all.adultsafe.data.SessionStore
+import uk.co.skills4all.adultsafe.api.AppSession
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -62,27 +65,28 @@ import uk.co.skills4all.adultsafe.ui.theme.AdultSafeText
 
 @Composable
 fun AdultSafeRoot() {
-    var mode by remember { mutableStateOf(AppMode.Disconnected) }
-    var activeSite by remember { mutableStateOf<ConnectedSite?>(null) }
-    var connectedSites by remember { mutableStateOf<List<ConnectedSite>>(emptyList()) }
+    val context = LocalContext.current
+    val restored = remember(context) { SessionStore.restore(context) }
+    var mode by remember { mutableStateOf(if (restored == null) AppMode.Disconnected else AppMode.Locked) }
+    var activeSite by remember { mutableStateOf<ConnectedSite?>(restored?.site) }
+    var connectedSites by remember { mutableStateOf(restored?.let { listOf(it.site) } ?: emptyList()) }
     var selectedScreen by remember { mutableStateOf(AppScreen.Dashboard) }
     var selectedFilter by remember { mutableStateOf(PersonFilter.All) }
     var selectedPerson by remember { mutableStateOf<PersonSummary?>(null) }
 
     when (mode) {
-        AppMode.Disconnected, AppMode.Connecting, AppMode.Error -> ConnectScreen(
-            mode = mode,
+        AppMode.Disconnected, AppMode.Connecting, AppMode.Error -> SignInScreen(
             onUseDemo = {
                 activeSite = DemoRepository.demoSite
                 connectedSites = listOf(DemoRepository.demoSite)
                 mode = AppMode.ConnectedDemo
             },
-            onConnected = { site ->
-                activeSite = site
-                connectedSites = connectedSites + site
-                mode = if (site.demoMode) AppMode.ConnectedDemo else AppMode.ConnectedLive
-            },
-            onMode = { mode = it }
+            onAuthenticated = { session ->
+                activeSite = session.site
+                connectedSites = listOf(session.site)
+                selectedScreen = AppScreen.Dashboard
+                mode = AppMode.ConnectedLive
+            }
         )
         AppMode.Locked -> LockScreen(activeSite, onUnlock = { mode = if (activeSite?.demoMode == true) AppMode.ConnectedDemo else AppMode.ConnectedLive })
         AppMode.ConnectedDemo, AppMode.ConnectedLive -> AdultSafeHome(
@@ -104,6 +108,7 @@ fun AdultSafeRoot() {
             onBack = { selectedPerson = null },
             onLock = { mode = AppMode.Locked },
             onLogout = {
+                runCatching { SessionStore.clear(context) }
                 activeSite = null
                 connectedSites = emptyList()
                 selectedPerson = null
@@ -113,52 +118,6 @@ fun AdultSafeRoot() {
             onAddSite = { mode = AppMode.Disconnected },
             onSwitchSite = { activeSite = it }
         )
-    }
-}
-
-@Composable
-private fun ConnectScreen(mode: AppMode, onUseDemo: () -> Unit, onConnected: (ConnectedSite) -> Unit, onMode: (AppMode) -> Unit) {
-    var url by remember { mutableStateOf("https://") }
-    var message by remember { mutableStateOf("Enter your AdultSafe site address or use demo mode.") }
-    val scope = rememberCoroutineScope()
-
-    Surface(Modifier.fillMaxSize(), color = AdultSafeBackground) {
-        LazyColumn(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center) {
-            item {
-                BrandHero("AdultSafe", "Connect your AdultSafe Records site.")
-                Spacer(Modifier.height(18.dp))
-                AppCard {
-                    SectionTitle("Connect site", "URL, QR invite and app-token login are V1-critical.")
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(value = url, onValueChange = { url = it }, label = { Text("Site address") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(12.dp))
-                    PrimaryAction(
-                        label = if (mode == AppMode.Connecting) "Checking…" else "Connect",
-                        onClick = {
-                            onMode(AppMode.Connecting)
-                            message = "Checking AdultSafe API…"
-                            scope.launch {
-                                val site = AdultSafeApi.discoverSite(url)
-                                if (site == null) {
-                                    message = "Could not confirm AdultSafe on that site."
-                                    onMode(AppMode.Error)
-                                } else {
-                                    onConnected(site)
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = mode != AppMode.Connecting && url.startsWith("https://") && url.length > 12
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    SecondaryAction("Use demo app data", onUseDemo, Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    SecondaryAction("Scan QR invite", { message = "QR scanner track is reserved for V1 before field testing." }, Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(12.dp))
-                    Text(message, color = AdultSafeMuted)
-                }
-            }
-        }
     }
 }
 
@@ -181,6 +140,14 @@ private fun AdultSafeHome(activeSite: ConnectedSite, connectedSites: List<Connec
                 SecondaryAction("Add site", onAddSite, Modifier.weight(1f))
                 SecondaryAction("Logout", onLogout, Modifier.weight(1f))
             }
+        }
+        if (!activeSite.demoMode) {
+            Text(
+                "Preview data: the dashboard and records below are samples until live data sync is enabled.",
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
+                color = AdultSafeMuted,
+                fontSize = 12.sp
+            )
         }
         NavRow(selectedScreen, onScreen)
         Box(Modifier.weight(1f)) {

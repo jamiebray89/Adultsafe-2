@@ -47,8 +47,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.android.gms.code.scanner.GmsBarcodeScanning
-import com.google.android.gms.code.scanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.launch
 import uk.co.skills4all.adultsafe.api.AdultSafeApi

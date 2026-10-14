@@ -333,7 +333,8 @@ fun AdultSafeRoot() {
                                             error = e.message ?: "Unable to switch site."
                                         }
                                     },
-                                    isDemo = isDemo
+                                    isDemo = isDemo,
+                                    session = session
                                 )
                             }
                         }
@@ -423,7 +424,8 @@ private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, onPers
 
 @Composable
 private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignOut: () -> Unit,
-    onAddSite: () -> Unit, sites: List<AppSession>, onSwitch: (AppSession) -> Unit, isDemo: Boolean) {
+    onAddSite: () -> Unit, sites: List<AppSession>, onSwitch: (AppSession) -> Unit, isDemo: Boolean,
+    session: AppSession?) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
         item { AppCard {
@@ -439,6 +441,7 @@ private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignO
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
         } }
+        if (!isDemo && session != null) item { DeviceManager(session, onSignOut) }
         item { AppCard {
             SectionTitle("Sites")
             Text("Connect another AdultSafe WordPress installation.", color = AdultSafeMuted)

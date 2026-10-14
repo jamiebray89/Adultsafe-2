@@ -1,6 +1,8 @@
 package uk.co.skills4all.adultsafe.ui
 
 import android.Manifest
+import androidx.core.content.FileProvider
+import java.io.File
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -269,16 +271,45 @@ private fun IdEvidenceCard(
             } catch (e: Exception) { uploadError = e.message ?: "Could not open the selected file." }
         }
     }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap: Bitmap? ->
-        if (bitmap != null) {
-            val out = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
-            handleBytes("image/jpeg", out.toByteArray())
-            bitmap.recycle()
+    var cameraFile by remember { mutableStateOf<File?>(null) }
+    fun captureFullResolution() {
+        try {
+            val directory = File(context.cacheDir, "adultsafe_capture").apply { mkdirs() }
+            val file = File.createTempFile("evidence_", ".jpg", directory)
+            cameraFile = file
+            val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+            fullCamera.launch(uri)
+        } catch (e: Exception) {
+            cameraFile?.delete()
+            cameraFile = null
+            uploadError = e.message ?: "Camera could not open."
+        }
+    }
+    val fullCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val file = cameraFile
+        cameraFile = null
+        if (file != null) {
+            try {
+                if (success) {
+                    val bytes = file.inputStream().use { stream ->
+                        val out = ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val n = stream.read(buffer)
+                            if (n < 0) break
+                            if (out.size() + n > 15*1024*1024) throw IllegalArgumentException("Photo exceeds the 15 MB upload limit.")
+                            out.write(buffer, 0, n)
+                        }
+                        out.toByteArray()
+                    }
+                    handleBytes("image/jpeg", bytes)
+                }
+            } catch (e: Exception) { uploadError = e.message ?: "Could not read ID photo." }
+            finally { file.delete() } // Raw camera photo is temporary and private.
         }
     }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) camera.launch(null) else uploadError = "Camera permission is needed to take an ID photo."
+        if (granted) captureFullResolution() else uploadError = "Camera permission is needed to take an ID photo."
     }
 
     AppCard {
@@ -290,7 +321,7 @@ private fun IdEvidenceCard(
             Spacer(Modifier.height(10.dp))
             Button(onClick = {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
-                    camera.launch(null)
+                    captureFullResolution()
                 else cameraPermission.launch(Manifest.permission.CAMERA)
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
             OutlinedButton(onClick = { photoPicker.launch(arrayOf("image/*", "application/pdf")) },

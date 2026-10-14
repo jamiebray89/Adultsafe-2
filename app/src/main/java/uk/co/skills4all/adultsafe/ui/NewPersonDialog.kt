@@ -20,6 +20,7 @@ fun NewPersonDialog(session: AppSession, onDismiss: () -> Unit, onCreated: () ->
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var personType by remember { mutableStateOf("volunteer") }
+    var childYear by remember { mutableStateOf("") }
     var role by remember { mutableStateOf("") }
     val sections = remember { mutableStateListOf<String>() }
     var metadata by remember { mutableStateOf<JSONObject?>(null) }
@@ -65,6 +66,8 @@ fun NewPersonDialog(session: AppSession, onDismiss: () -> Unit, onCreated: () ->
                 OutlinedTextField(email, { email = it }, label = { Text("Email (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Text("Person type")
                 Options(metadata?.optJSONObject("person_types"), personType, { personType = it })
+                if (personType == "parent_carer") OutlinedTextField(childYear, { childYear = it },
+                    label = { Text("Child's birth year only") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Text("Role")
                 Options(metadata?.optJSONObject("roles"), role, { role = it })
                 Text("Sections")
@@ -90,14 +93,14 @@ fun NewPersonDialog(session: AppSession, onDismiss: () -> Unit, onCreated: () ->
                 scope.launch {
                     try {
                         val request = JSONObject().put("name", name.trim()).put("email", email.trim())
-                            .put("person_type", personType).put("role", role)
+                            .put("person_type", personType).put("role", role).put("child_year_of_birth", childYear.trim())
                             .put("sections", JSONArray(sections.toList()))
                         LiveApi.createPerson(session.site.url, session.token, request)
                         onCreated()
                     } catch (e: Exception) { error = e.message ?: "Could not create person." }
                     finally { saving = false }
                 }
-            }, enabled = !saving && !loading && metadata != null && name.trim().isNotEmpty() && role.isNotBlank()) {
+            }, enabled = !saving && !loading && metadata != null && name.trim().isNotEmpty() && role.isNotBlank() && (childYear.isBlank() || childYear.matches(Regex("(19|20)[0-9]{2}")))) {
                 Text(if (saving) "Saving…" else "Save person")
             }
         },

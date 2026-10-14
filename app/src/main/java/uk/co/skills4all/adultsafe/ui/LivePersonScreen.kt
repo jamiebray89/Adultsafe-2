@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import uk.co.skills4all.adultsafe.api.*
@@ -75,10 +77,16 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         try {
             details = LiveApi.personDetail(url, token, person.id)
             metadata = LiveApi.metadata(url, token)
-            dbs = LiveApi.dbs(url, token, person.id)
-            idCheck = LiveApi.idCheck(url, token, person.id)
+            if (person.personType == "volunteer") {
+                dbs = LiveApi.dbs(url, token, person.id)
+                idCheck = LiveApi.idCheck(url, token, person.id)
+                if (canId) evidence = LiveApi.evidence(url, token, person.id)
+            } else {
+                dbs = null
+                idCheck = null
+                evidence = emptyList()
+            }
             documents = LiveApi.documents(url, token, person.id)
-            if (canId) evidence = LiveApi.evidence(url, token, person.id)
             if (canViewHistory) history = LiveApi.history(url, token, person.id)
         } catch (e: Exception) { error = e.message ?: "Unable to load this person's records." }
         finally { busy = false }
@@ -158,7 +166,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 }
                 item {
                     val record = idCheck
-                    if (record != null) IdEvidenceCard(
+                    if (person.personType == "volunteer" && record != null) IdEvidenceCard(
                         record, evidence, busy, canId, canIdCheck, context,
                         onUpload = { name, mime, bytes, key ->
                             update { LiveApi.upload(url, token, person.id, name, mime, bytes, key) }
@@ -299,6 +307,7 @@ private fun IdEvidenceCard(
     record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context,
     onUpload: (String, String, ByteArray, String) -> Unit, onCheck: (JSONObject) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var checker by remember(record.toString()) { mutableStateOf(record.optString("checker_name")) }
     var membership by remember(record.toString()) { mutableStateOf(record.optString("checker_membership_number")) }
     var uploadError by remember { mutableStateOf<String?>(null) }
@@ -309,22 +318,31 @@ private fun IdEvidenceCard(
     }
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            try {
-                val type = context.contentResolver.getType(uri) ?: "application/octet-stream"
-                require(type.startsWith("image/") || type == "application/pdf") { "Select an image or PDF." }
-                val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val out = ByteArrayOutputStream()
-                    val buf = ByteArray(8192)
-                    while (true) {
-                        val read = stream.read(buf)
-                        if (read < 0) break
-                        if (out.size() + read > 15*1024*1024) throw IllegalArgumentException("File exceeds 15 MB.")
-                        out.write(buf, 0, read)
+            scope.launch {
+                try {
+                    val (type, bytes) = withContext(Dispatchers.IO) {
+                        val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+                        require(mimeType in setOf("image/jpeg", "image/png", "image/webp", "application/pdf")) {
+                            "Select a JPEG, PNG, WebP or PDF."
+                        }
+                        val raw = context.contentResolver.openInputStream(uri)?.use { stream ->
+                            val out = ByteArrayOutputStream()
+                            val buffer = ByteArray(8192)
+                            while (true) {
+                                val count = stream.read(buffer)
+                                if (count < 0) break
+                                if (out.size() + count > 15 * 1024 * 1024) {
+                                    throw IllegalArgumentException("File exceeds the 15 MB limit.")
+                                }
+                                out.write(buffer, 0, count)
+                            }
+                            out.toByteArray()
+                        } ?: throw IllegalArgumentException("Could not open selected file.")
+                        Pair(mimeType, raw)
                     }
-                    out.toByteArray()
-                } ?: throw IllegalArgumentException("Could not open file.")
-                handleBytes(type, bytes)
-            } catch (e: Exception) { uploadError = e.message ?: "Could not open the selected file." }
+                    handleBytes(type, bytes)
+                } catch (e: Exception) { uploadError = e.message ?: "Could not read selected file." }
+            }
         }
     }
     var cameraFile by remember { mutableStateOf<File?>(null) }
@@ -332,23 +350,29 @@ private fun IdEvidenceCard(
         val file = cameraFile
         cameraFile = null
         if (file != null) {
-            try {
-                if (success) {
-                    val bytes = file.inputStream().use { stream ->
-                        val out = ByteArrayOutputStream()
-                        val buffer = ByteArray(8192)
-                        while (true) {
-                            val n = stream.read(buffer)
-                            if (n < 0) break
-                            if (out.size() + n > 15*1024*1024) throw IllegalArgumentException("Photo exceeds the 15 MB upload limit.")
-                            out.write(buffer, 0, n)
+            scope.launch {
+                try {
+                    if (success) {
+                        val bytes = withContext(Dispatchers.IO) {
+                            file.inputStream().use { stream ->
+                                val out = ByteArrayOutputStream()
+                                val buffer = ByteArray(8192)
+                                while (true) {
+                                    val count = stream.read(buffer)
+                                    if (count < 0) break
+                                    if (out.size() + count > 15 * 1024 * 1024) {
+                                        throw IllegalArgumentException("Photo exceeds the 15 MB limit.")
+                                    }
+                                    out.write(buffer, 0, count)
+                                }
+                                out.toByteArray()
+                            }
                         }
-                        out.toByteArray()
+                        handleBytes("image/jpeg", bytes)
                     }
-                    handleBytes("image/jpeg", bytes)
-                }
-            } catch (e: Exception) { uploadError = e.message ?: "Could not read ID photo." }
-            finally { file.delete() } // Raw camera photo is temporary and private.
+                } catch (e: Exception) { uploadError = e.message ?: "Could not read ID photo." }
+                finally { withContext(Dispatchers.IO) { file.delete() } }
+            }
         }
     }
     fun captureFullResolution() {
@@ -409,13 +433,13 @@ private fun DocumentsEditCard(
     val notRequired = remember(documents) {
         mutableStateListOf<String>().also { it.addAll(documents.filter { d -> d.state == "not_required" }.map { d -> d.key }) }
     }
-    val outstanding = documents.filter { it.state == "required" || it.state == "followup" }
+    val outstanding = documents.filter { it.state == "required" }
     AppCard {
         SectionTitle("Documents", "Select outstanding documents to record a signed handover or request confirmation.")
         if (documents.isEmpty()) Text("No document requirements are configured.", color = AdultSafeMuted)
         documents.forEach { doc ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                if (doc.state == "required" || doc.state == "followup") {
+                if (doc.state == "required") {
                     Checkbox(checked = doc.key in selected, onCheckedChange = { yes ->
                         if (yes) selected.add(doc.key) else selected.remove(doc.key)
                     })
@@ -441,7 +465,7 @@ private fun DocumentsEditCard(
         OutlinedButton(onClick = { onRequest(selected.toList()) }, enabled = !busy && canRequest && selected.isNotEmpty(),
             modifier = Modifier.fillMaxWidth()) { Text("Create confirmation link") }
         if (!canSign) Text("Document recording is not allowed for your account.", color = AdultSafeMuted)
-        if (outstanding.isEmpty()) Text("No documents awaiting handover.", color = AdultSafeMuted)
+        if (outstanding.isEmpty()) Text("No required documents awaiting handover.", color = AdultSafeMuted)
     }
 }
 

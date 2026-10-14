@@ -25,7 +25,8 @@ data class LivePerson(
 
 data class LiveTile(val key: String, val title: String, val count: Int, val filter: String)
 data class LiveAlert(val title: String, val message: String, val severity: String, val personId: String)
-data class LiveHome(val people: List<LivePerson>, val tiles: List<LiveTile>, val alerts: List<LiveAlert>)
+data class LiveHome(val people: List<LivePerson>, val tiles: List<LiveTile>, val alerts: List<LiveAlert>,
+    val documentPersonIds: Set<String>)
 data class LiveEvidence(val id: String, val name: String, val documentKey: String)
 data class LiveDevice(val id: String, val name: String, val lastUsed: String, val revoked: Boolean)
 data class LiveDocument(val key: String, val label: String, val state: String)
@@ -97,21 +98,44 @@ object LiveApi {
     )
 
     suspend fun load(base: String, token: String, allowDemoRecords: Boolean = false): LiveHome = withContext(Dispatchers.IO) {
-        val p = request(base, token, "/people").optJSONArray("people").objects().map(::person)
-            .filter { allowDemoRecords || !it.demo }
+        val peopleResponse = request(base, token, "/people")
+        val peopleArray = peopleResponse.optJSONArray("people")
+            ?: throw AdultSafeConnectionException("The WordPress people response is missing its records list.")
+        val p = peopleArray.objects().map(::person).filter { allowDemoRecords || !it.demo }
         val d = request(base, token, "/dashboard")
-        val tiles = d.optJSONArray("tiles").objects().map {
+        val tileArray = d.optJSONArray("tiles")
+            ?: throw AdultSafeConnectionException("The WordPress dashboard response is missing its tiles.")
+        val tiles = tileArray.objects().map {
             LiveTile(it.optString("key"), it.optString("label"), it.optInt("count"), it.optString("filter"))
         }.filter { it.count > 0 }
-        val alerts = request(base, token, "/alerts").optJSONArray("items").objects().map {
+        val alertsJson = request(base, token, "/alerts")
+        val alertsData = alertsJson.optJSONArray("items")
+            ?: throw AdultSafeConnectionException("The WordPress alerts response is missing its items list.")
+        val alerts = alertsData.objects().map {
             LiveAlert(it.optString("title"), it.optString("message"), it.optString("severity"), it.optString("person_id"))
         }
-        LiveHome(p, tiles, alerts)
+        val docJson = request(base, token, "/workspaces/default/document-acknowledgements")
+        val docRows = docJson.optJSONArray("rows")
+            ?: throw AdultSafeConnectionException("The document response is missing its records list.")
+        val awaitingDocuments = docRows.objects().filter { row ->
+            val states = row.optJSONObject("documents") ?: JSONObject()
+            val keys = states.keys()
+            var pending = false
+            while (keys.hasNext()) {
+                val state = states.optJSONObject(keys.next())?.optString("state").orEmpty()
+                if (state == "required" || state == "followup" || state == "signing_pending") pending = true
+            }
+            pending
+        }.map { it.optString("person_id") }.toSet()
+        LiveHome(p, tiles, alerts, awaitingDocuments)
     }
 
     suspend fun filteredPeople(base: String, token: String, filter: String): List<LivePerson> = withContext(Dispatchers.IO) {
         require(filter.matches(Regex("[a-z0-9_-]+"))) { "Invalid filter" }
-        request(base, token, "/dashboard/tile/" + filter).optJSONArray("people").objects().map(::person).filter { !it.demo }
+        val json = request(base, token, "/dashboard/tile/" + filter)
+        val rows = json.optJSONArray("people")
+            ?: throw AdultSafeConnectionException("The WordPress filter returned an invalid records list.")
+        rows.objects().map(::person).filter { !it.demo }
     }
 
     suspend fun personDetail(base: String, token: String, id: String): JSONObject = withContext(Dispatchers.IO) {
@@ -190,6 +214,15 @@ object LiveApi {
 
     suspend fun upload(base: String, token: String, id: String, name: String, mime: String, bytes: ByteArray, documentKey: String): List<LiveEvidence> = withContext(Dispatchers.IO) {
         require(bytes.isNotEmpty() && bytes.size <= 15 * 1024 * 1024) { "Select a file no larger than 15 MB." }
+        val extension = when (mime.lowercase()) {
+            "image/jpeg", "image/jpg" -> ".jpg"
+            "image/png" -> ".png"
+            "image/webp" -> ".webp"
+            "application/pdf" -> ".pdf"
+            else -> throw IllegalArgumentException("Please select a JPEG, PNG, WebP or PDF file.")
+        }
+        // WordPress validates both actual file data and the extension.
+        val safeName = "adultsafe_evidence" + extension
         val boundary = "AdultSafe-" + UUID.randomUUID().toString()
         val con = open(base + ROOT + "/people/" + id + "/id-evidence", token, "POST")
         try {
@@ -199,14 +232,20 @@ object LiveApi {
             val output = ByteArrayOutputStream()
             fun append(s: String) { output.write(s.toByteArray(Charsets.UTF_8)) }
             append("--" + boundary + newline + "Content-Disposition: form-data; name=\"document_key\"" + newline + newline + documentKey + newline)
-            append("--" + boundary + newline + "Content-Disposition: form-data; name=\"file\"; filename=\"adultsafe-evidence\"" + newline)
+            append("--" + boundary + newline + "Content-Disposition: form-data; name=\"file\"; filename=\"" + safeName + "\"" + newline)
             append("Content-Type: " + mime + newline + newline)
             output.write(bytes)
             append(newline + "--" + boundary + "--" + newline)
             con.outputStream.use { it.write(output.toByteArray()) }
-            response(con).optJSONArray("evidence").objects().map {
+            val received = response(con).optJSONArray("evidence")
+                ?: throw AdultSafeConnectionException("The server did not confirm the evidence upload.")
+            val evidence = received.objects().map {
                 LiveEvidence(it.optString("id"), it.optString("original_name"), it.optString("document_key"))
             }
+            if (evidence.none { it.documentKey == documentKey && it.id.isNotBlank() }) {
+                throw AdultSafeConnectionException("The server did not confirm that the new evidence was stored.")
+            }
+            evidence
         } finally { con.disconnect() }
     }
 }

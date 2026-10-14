@@ -272,19 +272,6 @@ private fun IdEvidenceCard(
         }
     }
     var cameraFile by remember { mutableStateOf<File?>(null) }
-    fun captureFullResolution() {
-        try {
-            val directory = File(context.cacheDir, "adultsafe_capture").apply { mkdirs() }
-            val file = File.createTempFile("evidence_", ".jpg", directory)
-            cameraFile = file
-            val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
-            fullCamera.launch(uri)
-        } catch (e: Exception) {
-            cameraFile?.delete()
-            cameraFile = null
-            uploadError = e.message ?: "Camera could not open."
-        }
-    }
     val fullCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         val file = cameraFile
         cameraFile = null
@@ -306,6 +293,19 @@ private fun IdEvidenceCard(
                 }
             } catch (e: Exception) { uploadError = e.message ?: "Could not read ID photo." }
             finally { file.delete() } // Raw camera photo is temporary and private.
+        }
+    }
+    fun captureFullResolution() {
+        try {
+            val directory = File(context.cacheDir, "adultsafe_capture").apply { mkdirs() }
+            val file = File.createTempFile("evidence_", ".jpg", directory)
+            cameraFile = file
+            val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+            fullCamera.launch(uri)
+        } catch (e: Exception) {
+            cameraFile?.delete()
+            cameraFile = null
+            uploadError = e.message ?: "Camera could not open."
         }
     }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->

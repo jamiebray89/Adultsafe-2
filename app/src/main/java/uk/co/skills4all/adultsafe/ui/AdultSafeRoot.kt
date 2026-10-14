@@ -3,6 +3,11 @@ package uk.co.skills4all.adultsafe.ui
 import android.app.KeyguardManager
 import android.content.Context
 import android.app.Activity
+import android.os.Build
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -64,34 +69,66 @@ fun AdultSafeRoot() {
     var refresh by remember { mutableIntStateOf(0) }
     var unlocking by remember { mutableStateOf(false) }
 
-    val lockLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val s = session
-            if (s != null) {
-                unlocking = true
-                scope.launch {
-                    try {
-                        LiveApi.validate(s.site.url, s.token)
-                        error = null
-                        mode = AppMode.ConnectedLive
-                    } catch (e: Exception) {
-                        error = e.message ?: "Unable to verify your saved sign-in."
-                    } finally { unlocking = false }
-                }
-            }
+    fun validateUnlockedSession() {
+        val active = session ?: return
+        unlocking = true
+        error = null
+        scope.launch {
+            try {
+                val me = LiveApi.validate(active.site.url, active.token)
+                val scopes = me.optJSONArray("permissions")?.let { array ->
+                    (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
+                } ?: active.permissions
+                val updated = active.copy(permissions = scopes)
+                SessionStore.save(context, updated)
+                session = updated
+                savedSites = SessionStore.saved(context)
+                mode = AppMode.ConnectedLive
+            } catch (e: Exception) {
+                error = e.message ?: "Unable to verify your saved sign-in."
+            } finally { unlocking = false }
         }
     }
-
+    val lockLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) validateUnlockedSession()
+    }
+    val activity = context as? FragmentActivity
+    val biometric = remember(activity) {
+        activity?.let { host ->
+            BiometricPrompt(host, ContextCompat.getMainExecutor(host), object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    super.onAuthenticationSucceeded(result)
+                    validateUnlockedSession()
+                }
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    super.onAuthenticationError(errorCode, errString)
+                    error = errString.toString()
+                }
+            })
+        }
+    }
     fun unlock() {
         val manager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (!manager.isDeviceSecure) {
-            error = "Set a screen PIN, password or pattern in Android settings before opening confidential records."
+            error = "Set a device PIN, password or pattern in Android settings before opening confidential records."
             return
         }
-        val intent = manager.createConfirmDeviceCredentialIntent("Unlock AdultSafe", "Confirm your device PIN, pattern or password")
-        if (intent == null) {
-            error = "Secure device authentication is unavailable. Your records remain locked."
-        } else lockLauncher.launch(intent)
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        if (Build.VERSION.SDK_INT >= 30 && activity != null && biometric != null &&
+            BiometricManager.from(activity).canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS) {
+            biometric.authenticate(
+                BiometricPrompt.PromptInfo.Builder()
+                    .setTitle("Unlock AdultSafe")
+                    .setSubtitle("Use your fingerprint, face or device PIN")
+                    .setAllowedAuthenticators(authenticators)
+                    .build()
+            )
+        } else {
+            val intent = manager.createConfirmDeviceCredentialIntent("Unlock AdultSafe", "Confirm your device PIN, pattern or password")
+            if (intent == null) error = "Secure device authentication is unavailable. Your records remain locked."
+            else lockLauncher.launch(intent)
+        }
     }
 
     LaunchedEffect(mode, session?.site?.url, session?.token, refresh) {
@@ -257,7 +294,7 @@ fun AdultSafeRoot() {
                                 }
                                 Tab.People -> LivePeopleList(shown, loading, filter, filter.isNotBlank(),
                                     onClearFilter = { filter = "" }, onSelect = { selected = it },
-                                    onCreate = if (!isDemo && session?.permissions?.contains("people.write") == true) { { showCreate = true } } else null)
+                                    onCreate = if (!isDemo && (session?.permissions?.contains("people.write") == true || session?.roles?.contains("manager") == true)) { { showCreate = true } } else null)
                                 Tab.Alerts -> {
                                     val alerts = if (isDemo) DemoRepository.alerts().map {
                                         LiveAlert(it.title, it.body, it.tone.name, it.personId.orEmpty())

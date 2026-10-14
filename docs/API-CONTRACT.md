@@ -124,3 +124,29 @@ not been verified against a live AdultSafe plugin during this Android-only updat
 A successful live session token is kept in Keystore-backed encrypted
 preferences. Logging out clears it. The existing local-unlock and live-data-sync
 foundations are still incomplete and must not be mistaken for production security.
+
+
+## Stage 8 hardened production contract (minimum WordPress 1.39.7)
+
+The Android 0.2.0-beta client refuses live authentication or local-session unlock
+unless /app/health or /app/me reports AdultSafe API >= 1.39.7. This guards against
+the older plugin's weak REST authorisation.
+
+All live authenticated requests use X-AdultSafe-App-Token. Required response keys:
+- GET /people: people array.
+- GET /dashboard: tiles array; tiles have key, label, count, filter.
+- GET /alerts: items array.
+- GET /workspaces/default/document-acknowledgements: rows array;
+  each row has person_id and documents states keyed by requirement.
+- GET /dashboard/tile/{slug}: people array.
+- POST /app/login: token, device_id, user, permissions.
+- GET /app/me: permissions array and site.api_version.
+
+ID evidence: POST /people/{id}/id-evidence uses multipart with the file part
+bearing a real .jpg/.png/.webp/.pdf extension; the WordPress plugin checks both
+the file type and that private evidence storage actually completed. The client
+rejects a missing evidence confirmation. Signed history responses redact raw
+base64 signature data while retaining audit events.
+
+v1.39.7 also fixes POST /people to return the created person's full detail,
+rather than attempting to look up an ID missing from a new request.

@@ -5,6 +5,7 @@ import android.content.Context
 import android.app.Activity
 import android.os.Build
 import android.os.SystemClock
+import android.widget.Toast
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.biometric.BiometricManager
@@ -71,6 +72,7 @@ fun AdultSafeRoot() {
     var error by remember { mutableStateOf<String?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
     var unlocking by remember { mutableStateOf(false) }
+    var signingOut by remember { mutableStateOf(false) }
 
     fun validateUnlockedSession() {
         val active = session ?: return
@@ -192,6 +194,28 @@ fun AdultSafeRoot() {
         savedSites = SessionStore.saved(context)
     }
 
+    fun signOut(alreadyRevoked: Boolean = false) {
+        if (signingOut) return
+        val current = session
+        signingOut = true
+        scope.launch {
+            val remote = if (current != null && !alreadyRevoked) {
+                runCatching { LiveApi.logout(current.site.url, current.token) }
+            } else Result.success(Unit)
+            try {
+                if (current != null) SessionStore.clear(context)
+                leave()
+                if (remote.isFailure) {
+                    Toast.makeText(context,
+                        "Signed out locally. The website could not confirm device revocation; check connected devices online.",
+                        Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                error = "Could not securely remove the saved session. Try again."
+            } finally { signingOut = false }
+        }
+    }
+
     if (showCreate && mode == AppMode.ConnectedLive && session != null) {
         NewPersonDialog(
             session = session!!,
@@ -234,12 +258,7 @@ fun AdultSafeRoot() {
                 Button(onClick = { unlock() }, enabled = !unlocking) { Text(if (unlocking) "Checking session…" else "Secure unlock") }
                 if (error != null) { Spacer(Modifier.height(12.dp)); Text(error.orEmpty(), color = MaterialTheme.colorScheme.error) }
                 Spacer(Modifier.height(10.dp))
-                TextButton(onClick = {
-                    val s = session
-                    if (s != null) scope.launch { runCatching { LiveApi.logout(s.site.url, s.token) } }
-                    runCatching { SessionStore.clear(context) }
-                    leave()
-                }) { Text("Sign out") }
+                TextButton(onClick = { signOut() }, enabled = !signingOut) { Text("Sign out") }
             }
         }
         AppMode.ConnectedDemo, AppMode.ConnectedLive -> {
@@ -340,12 +359,8 @@ fun AdultSafeRoot() {
                                 Tab.Settings -> LiveSettings(
                                     title = displayTitle, url = if (isDemo) "" else session?.site?.url.orEmpty(),
                                     onLock = { if (!isDemo) { error = null; mode = AppMode.Locked } },
-                                    onSignOut = {
-                                        val s = session
-                                        if (s != null) scope.launch { runCatching { LiveApi.logout(s.site.url, s.token) } }
-                                        runCatching { SessionStore.clear(context) }
-                                        leave()
-                                    },
+                                    onSignOut = { signOut() },
+                                    onSelfRevoked = { signOut(alreadyRevoked = true) },
                                     onAddSite = { leave() },
                                     sites = savedSites,
                                     onSwitch = { site ->
@@ -456,7 +471,7 @@ private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, ready:
 @Composable
 private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignOut: () -> Unit,
     onAddSite: () -> Unit, sites: List<AppSession>, onSwitch: (AppSession) -> Unit, isDemo: Boolean,
-    session: AppSession?) {
+    session: AppSession?, onSelfRevoked: () -> Unit) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
         item { AppCard {
@@ -472,7 +487,7 @@ private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignO
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
         } }
-        if (!isDemo && session != null) item { DeviceManager(session, onSignOut) }
+        if (!isDemo && session != null) item { DeviceManager(session, onSelfRevoked) }
         item { AppCard {
             SectionTitle("Sites")
             Text("Connect another AdultSafe WordPress installation.", color = AdultSafeMuted)

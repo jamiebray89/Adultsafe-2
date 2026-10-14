@@ -42,6 +42,7 @@ import uk.co.skills4all.adultsafe.ui.components.AppCard
 import uk.co.skills4all.adultsafe.ui.components.SectionTitle
 import uk.co.skills4all.adultsafe.ui.theme.AdultSafeMuted
 import java.io.ByteArrayOutputStream
+import java.time.LocalDate
 
 @Composable
 fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit, onChanged: () -> Unit) {
@@ -287,6 +288,9 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
     var submitted by remember(record.toString()) { mutableStateOf(record.optString("submitted_date")) }
     var result by remember(record.toString()) { mutableStateOf(record.optString("result_received_date")) }
     var expiry by remember(record.toString()) { mutableStateOf(record.optString("expiry_date")) }
+    fun validDate(value: String): Boolean = value.isBlank() ||
+        runCatching { LocalDate.parse(value); true }.getOrDefault(false)
+    val allDatesValid = listOf(requested, submitted, result, expiry).all(::validDate)
     AppCard {
         SectionTitle("DBS record", "Use YYYY-MM-DD dates; leave expiry blank to use site defaults after a result.")
         Text("Current status: " + record.optString("status").replace("_", " "), color = AdultSafeMuted)
@@ -294,11 +298,12 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
         OutlinedTextField(submitted, { submitted = it }, label = { Text("Submitted date") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(result, { result = it }, label = { Text("Result received") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(expiry, { expiry = it }, label = { Text("Expiry date") }, modifier = Modifier.fillMaxWidth())
+        if (!allDatesValid) Text("Enter dates as real calendar dates in YYYY-MM-DD format.", color = MaterialTheme.colorScheme.error)
         Spacer(Modifier.height(12.dp))
         Button(onClick = {
             onSave(JSONObject().put("requested_date", requested).put("submitted_date", submitted)
                 .put("result_received_date", result).put("expiry_date", expiry))
-        }, enabled = !busy && canEdit, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
+        }, enabled = !busy && canEdit && allDatesValid, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
     }
 }
 

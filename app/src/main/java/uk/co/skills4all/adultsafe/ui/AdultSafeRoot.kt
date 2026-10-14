@@ -7,6 +7,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +22,8 @@ import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.*
+import org.json.JSONArray
+import org.json.JSONObject
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +51,8 @@ fun AdultSafeRoot() {
     val scope = rememberCoroutineScope()
     val restored = remember(context) { SessionStore.restore(context) }
     var session by remember { mutableStateOf<AppSession?>(restored) }
+    var savedSites by remember { mutableStateOf(SessionStore.saved(context)) }
+    var showCreate by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf(if (restored == null) AppMode.Disconnected else AppMode.Locked) }
     var tab by remember { mutableStateOf(Tab.Home) }
     var selected by remember { mutableStateOf<LivePerson?>(null) }
@@ -118,6 +124,20 @@ fun AdultSafeRoot() {
         error = null
         mode = AppMode.Disconnected
         tab = Tab.Home
+        savedSites = SessionStore.saved(context)
+    }
+
+    if (showCreate && mode == AppMode.ConnectedLive && session != null) {
+        NewPersonDialog(
+            session = session!!,
+            onDismiss = { showCreate = false },
+            onCreated = {
+                showCreate = false
+                tab = Tab.People
+                filter = ""
+                refresh++
+            }
+        )
     }
 
     when (mode) {
@@ -131,6 +151,7 @@ fun AdultSafeRoot() {
             },
             onAuthenticated = { s ->
                 session = s
+                savedSites = SessionStore.saved(context)
                 data = null
                 selected = null
                 tab = Tab.Home
@@ -235,7 +256,8 @@ fun AdultSafeRoot() {
                                     })
                                 }
                                 Tab.People -> LivePeopleList(shown, loading, filter, filter.isNotBlank(),
-                                    onClearFilter = { filter = "" }, onSelect = { selected = it })
+                                    onClearFilter = { filter = "" }, onSelect = { selected = it },
+                                    onCreate = if (!isDemo && session?.permissions?.contains("people.write") == true) { { showCreate = true } } else null)
                                 Tab.Alerts -> {
                                     val alerts = if (isDemo) DemoRepository.alerts().map {
                                         LiveAlert(it.title, it.body, it.tone.name, it.personId.orEmpty())
@@ -260,6 +282,20 @@ fun AdultSafeRoot() {
                                         leave()
                                     },
                                     onAddSite = { leave() },
+                                    sites = savedSites,
+                                    onSwitch = { site ->
+                                        try {
+                                            SessionStore.activate(context, site)
+                                            session = site
+                                            selected = null
+                                            data = null
+                                            filter = ""
+                                            tab = Tab.Home
+                                            mode = AppMode.Locked
+                                        } catch (e: Exception) {
+                                            error = e.message ?: "Unable to switch site."
+                                        }
+                                    },
                                     isDemo = isDemo
                                 )
                             }
@@ -293,7 +329,8 @@ private fun LiveDashboard(tiles: List<LiveTile>, ready: Boolean, onTile: (LiveTi
 private fun LivePeopleList(
     people: List<LivePerson>, loading: Boolean, filter: String, filtered: Boolean,
     onClearFilter: () -> Unit, onSelect: (LivePerson) -> Unit,
-    title: String = "People", subtitle: String = "Volunteers and parents from your AdultSafe site"
+    title: String = "People", subtitle: String = "Volunteers and parents from your AdultSafe site",
+    onCreate: (() -> Unit)? = null
 ) {
     var search by remember { mutableStateOf("") }
     val matches = people.filter {
@@ -301,7 +338,10 @@ private fun LivePeopleList(
             it.personType.contains(search, true) || it.sections.any { s -> s.contains(search, true) }
     }.sortedBy { it.name.substringAfterLast(" ").lowercase() }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold) }
+        item { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            if (onCreate != null) TextButton(onClick = onCreate) { Text("+ Add person") }
+        } }
         item { Text(subtitle, color = AdultSafeMuted) }
         if (filtered) item { TextButton(onClick = onClearFilter) { Text("Clear filter: " + filter) } }
         item { OutlinedTextField(search, { search = it }, label = { Text("Search people") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
@@ -345,7 +385,8 @@ private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, onPers
 }
 
 @Composable
-private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignOut: () -> Unit, onAddSite: () -> Unit, isDemo: Boolean) {
+private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignOut: () -> Unit,
+    onAddSite: () -> Unit, sites: List<AppSession>, onSwitch: (AppSession) -> Unit, isDemo: Boolean) {
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
         item { AppCard {
@@ -364,6 +405,11 @@ private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignO
         item { AppCard {
             SectionTitle("Sites")
             Text("Connect another AdultSafe WordPress installation.", color = AdultSafeMuted)
+            sites.filter { it.site.url != url }.forEach { s ->
+                OutlinedButton(onClick = { onSwitch(s) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Switch to " + s.site.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = onAddSite, modifier = Modifier.fillMaxWidth()) { Text("Connect another site") }
         } }

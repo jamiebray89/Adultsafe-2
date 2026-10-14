@@ -1,165 +1,288 @@
 package uk.co.skills4all.adultsafe.ui
 
+import android.app.KeyguardManager
+import android.content.Context
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Dashboard
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.platform.LocalContext
-import uk.co.skills4all.adultsafe.data.SessionStore
-import uk.co.skills4all.adultsafe.api.AppSession
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import uk.co.skills4all.adultsafe.api.AdultSafeApi
+import uk.co.skills4all.adultsafe.api.*
 import uk.co.skills4all.adultsafe.data.DemoRepository
-import uk.co.skills4all.adultsafe.model.AdultSafeAlert
+import uk.co.skills4all.adultsafe.data.SessionStore
 import uk.co.skills4all.adultsafe.model.AppMode
-import uk.co.skills4all.adultsafe.model.AppScreen
-import uk.co.skills4all.adultsafe.model.ConnectedSite
-import uk.co.skills4all.adultsafe.model.DashboardTile
-import uk.co.skills4all.adultsafe.model.DbsStatus
-import uk.co.skills4all.adultsafe.model.DocumentRequirement
-import uk.co.skills4all.adultsafe.model.DocumentState
-import uk.co.skills4all.adultsafe.model.PersonFilter
-import uk.co.skills4all.adultsafe.model.PersonSummary
-import uk.co.skills4all.adultsafe.model.TileTone
-import uk.co.skills4all.adultsafe.ui.components.AppCard
-import uk.co.skills4all.adultsafe.ui.components.BrandHero
-import uk.co.skills4all.adultsafe.ui.components.Logo
-import uk.co.skills4all.adultsafe.ui.components.PrimaryAction
-import uk.co.skills4all.adultsafe.ui.components.SecondaryAction
-import uk.co.skills4all.adultsafe.ui.components.SectionTitle
+import uk.co.skills4all.adultsafe.ui.components.*
 import uk.co.skills4all.adultsafe.ui.theme.AdultSafeBackground
 import uk.co.skills4all.adultsafe.ui.theme.AdultSafeMuted
 import uk.co.skills4all.adultsafe.ui.theme.AdultSafeNavy
-import uk.co.skills4all.adultsafe.ui.theme.AdultSafeText
+
+private enum class Tab(val label: String) { Home("Home"), People("People"), Alerts("Alerts"), Docs("Docs"), Settings("Settings") }
 
 @Composable
 fun AdultSafeRoot() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val restored = remember(context) { SessionStore.restore(context) }
+    var session by remember { mutableStateOf<AppSession?>(restored) }
     var mode by remember { mutableStateOf(if (restored == null) AppMode.Disconnected else AppMode.Locked) }
-    var activeSite by remember { mutableStateOf<ConnectedSite?>(restored?.site) }
-    var connectedSites by remember { mutableStateOf(restored?.let { listOf(it.site) } ?: emptyList()) }
-    var selectedScreen by remember { mutableStateOf(AppScreen.Dashboard) }
-    var selectedFilter by remember { mutableStateOf(PersonFilter.All) }
-    var selectedPerson by remember { mutableStateOf<PersonSummary?>(null) }
+    var tab by remember { mutableStateOf(Tab.Home) }
+    var selected by remember { mutableStateOf<LivePerson?>(null) }
+    var filter by remember { mutableStateOf("") }
+    var data by remember { mutableStateOf<LiveHome?>(null) }
+    var filtered by remember { mutableStateOf<List<LivePerson>?>(null) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var refresh by remember { mutableIntStateOf(0) }
+    var unlocking by remember { mutableStateOf(false) }
+
+    val lockLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val s = session
+            if (s != null) {
+                unlocking = true
+                scope.launch {
+                    try {
+                        LiveApi.validate(s.site.url, s.token)
+                        error = null
+                        mode = AppMode.ConnectedLive
+                    } catch (e: Exception) {
+                        error = e.message ?: "Unable to verify your saved sign-in."
+                    } finally { unlocking = false }
+                }
+            }
+        }
+    }
+
+    fun unlock() {
+        val manager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (!manager.isDeviceSecure) {
+            error = "Set a screen PIN, password or pattern in Android settings before opening confidential records."
+            return
+        }
+        val intent = manager.createConfirmDeviceCredentialIntent("Unlock AdultSafe", "Confirm your device PIN, pattern or password")
+        if (intent == null) {
+            error = "Secure device authentication is unavailable. Your records remain locked."
+        } else lockLauncher.launch(intent)
+    }
+
+    LaunchedEffect(mode, session?.site?.url, session?.token, refresh) {
+        if (mode == AppMode.ConnectedLive) {
+            val s = session ?: return@LaunchedEffect
+            loading = true
+            error = null
+            try {
+                data = LiveApi.load(s.site.url, s.token)
+            } catch (e: Exception) {
+                data = null // Never show demonstration records when a live request fails.
+                error = e.message ?: "Unable to load records."
+            } finally { loading = false }
+        }
+    }
+    LaunchedEffect(mode, filter) {
+        filtered = null
+        if (mode == AppMode.ConnectedLive && filter.isNotBlank()) {
+            val s = session ?: return@LaunchedEffect
+            try { filtered = LiveApi.filteredPeople(s.site.url, s.token, filter) }
+            catch (e: Exception) { error = e.message ?: "Unable to load filtered people." }
+        }
+    }
+
+    fun leave() {
+        session = null
+        selected = null
+        data = null
+        filtered = null
+        error = null
+        mode = AppMode.Disconnected
+        tab = Tab.Home
+    }
 
     when (mode) {
         AppMode.Disconnected, AppMode.Connecting, AppMode.Error -> SignInScreen(
             onUseDemo = {
-                activeSite = DemoRepository.demoSite
-                connectedSites = listOf(DemoRepository.demoSite)
+                session = null
+                data = null
+                selected = null
+                filter = ""
                 mode = AppMode.ConnectedDemo
             },
-            onAuthenticated = { session ->
-                activeSite = session.site
-                connectedSites = listOf(session.site)
-                selectedScreen = AppScreen.Dashboard
+            onAuthenticated = { s ->
+                session = s
+                data = null
+                selected = null
+                tab = Tab.Home
+                filter = ""
                 mode = AppMode.ConnectedLive
             }
         )
-        AppMode.Locked -> LockScreen(activeSite, onUnlock = { mode = if (activeSite?.demoMode == true) AppMode.ConnectedDemo else AppMode.ConnectedLive })
-        AppMode.ConnectedDemo, AppMode.ConnectedLive -> AdultSafeHome(
-            activeSite = activeSite ?: DemoRepository.demoSite,
-            connectedSites = connectedSites,
-            selectedScreen = selectedScreen,
-            selectedFilter = selectedFilter,
-            selectedPerson = selectedPerson,
-            onScreen = {
-                selectedPerson = null
-                selectedScreen = it
-            },
-            onFilter = {
-                selectedFilter = it
-                selectedPerson = null
-                selectedScreen = AppScreen.People
-            },
-            onPerson = { selectedPerson = it },
-            onBack = { selectedPerson = null },
-            onLock = { mode = AppMode.Locked },
-            onLogout = {
-                runCatching { SessionStore.clear(context) }
-                activeSite = null
-                connectedSites = emptyList()
-                selectedPerson = null
-                selectedScreen = AppScreen.Dashboard
-                mode = AppMode.Disconnected
-            },
-            onAddSite = { mode = AppMode.Disconnected },
-            onSwitchSite = { activeSite = it }
-        )
-    }
-}
-
-@Composable
-private fun AdultSafeHome(activeSite: ConnectedSite, connectedSites: List<ConnectedSite>, selectedScreen: AppScreen, selectedFilter: PersonFilter, selectedPerson: PersonSummary?, onScreen: (AppScreen) -> Unit, onFilter: (PersonFilter) -> Unit, onPerson: (PersonSummary) -> Unit, onBack: () -> Unit, onLock: () -> Unit, onLogout: () -> Unit, onAddSite: () -> Unit, onSwitchSite: (ConnectedSite) -> Unit) {
-    val people = DemoRepository.people()
-    val siteMode = if (activeSite.demoMode) "Demo mode" else "Live site"
-    Column(Modifier.fillMaxSize().background(AdultSafeBackground)) {
-        AppCard(Modifier.padding(16.dp), contentPadding = 14) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Logo(size = 54)
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text("AdultSafe", fontWeight = FontWeight.Bold, fontSize = 24.sp, color = AdultSafeNavy)
-                    Text("${activeSite.name} · $siteMode", color = AdultSafeMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        AppMode.Locked -> Surface(color = AdultSafeBackground, modifier = Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Logo(size = 84)
+                Spacer(Modifier.height(18.dp))
+                Text("AdultSafe is locked", fontSize = 25.sp, color = AdultSafeNavy, fontWeight = FontWeight.Bold)
+                Text(session?.site?.name.orEmpty(), maxLines = 2, color = AdultSafeMuted)
+                Spacer(Modifier.height(20.dp))
+                Button(onClick = { unlock() }, enabled = !unlocking) { Text(if (unlocking) "Checking session…" else "Secure unlock") }
+                if (error != null) { Spacer(Modifier.height(12.dp)); Text(error.orEmpty(), color = MaterialTheme.colorScheme.error) }
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = {
+                    val s = session
+                    if (s != null) scope.launch { runCatching { LiveApi.logout(s.site.url, s.token) } }
+                    runCatching { SessionStore.clear(context) }
+                    leave()
+                }) { Text("Sign out") }
+            }
+        }
+        AppMode.ConnectedDemo, AppMode.ConnectedLive -> {
+            val isDemo = mode == AppMode.ConnectedDemo
+            val visible = if (isDemo) {
+                DemoRepository.people().map {
+                    LivePerson(it.id, it.name, it.initials, "volunteer", it.role, emptyList(),
+                        it.dbsStatus.name, it.dbsExpiry.orEmpty(), listOfNotNull(it.warning.takeIf(String::isNotBlank)), "", true)
+                }
+            } else data?.people.orEmpty()
+            val shown = if (filter.isBlank() || isDemo) visible else filtered.orEmpty()
+            val displayTitle = if (isDemo) "AdultSafe Demo" else session?.site?.name.orEmpty()
+            Scaffold(
+                containerColor = AdultSafeBackground,
+                topBar = {
+                    Surface(color = Color.White, shadowElevation = 1.dp) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Logo(size = 42)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("AdultSafe", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = AdultSafeNavy)
+                                Text(displayTitle + if (isDemo) " · Demo" else "", maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis, color = AdultSafeMuted, fontSize = 12.sp)
+                            }
+                            IconButton(onClick = { refresh++ }, enabled = !isDemo && !loading) {
+                                Icon(Icons.Outlined.Refresh, contentDescription = "Refresh live records", tint = AdultSafeNavy)
+                            }
+                        }
+                    }
+                },
+                bottomBar = {
+                    NavigationBar(containerColor = Color.White, tonalElevation = 2.dp) {
+                        Tab.entries.forEach { item ->
+                            val icon = when (item) {
+                                Tab.Home -> Icons.Outlined.Dashboard
+                                Tab.People -> Icons.Outlined.People
+                                Tab.Alerts -> Icons.Outlined.Notifications
+                                Tab.Docs -> Icons.Outlined.Description
+                                Tab.Settings -> Icons.Outlined.Settings
+                            }
+                            NavigationBarItem(
+                                selected = tab == item, onClick = { selected = null; tab = item; if (item != Tab.People) filter = "" },
+                                icon = { Icon(icon, contentDescription = null) },
+                                label = { Text(item.label, maxLines = 1, fontSize = 11.sp) },
+                                alwaysShowLabel = true
+                            )
+                        }
+                    }
+                }
+            ) { padding ->
+                Box(Modifier.padding(padding).fillMaxSize()) {
+                    if (selected != null && session != null && !isDemo) {
+                        LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
+                            onChanged = { refresh++ })
+                    } else if (selected != null && isDemo) {
+                        Column(Modifier.padding(20.dp)) {
+                            TextButton(onClick = { selected = null }) { Text("← Back") }
+                            Text(selected!!.name, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                            Text("Sample record. Actions are unavailable in demo mode.")
+                        }
+                    } else {
+                        Column(Modifier.fillMaxSize()) {
+                            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                            if (error != null) Card(Modifier.fillMaxWidth().padding(12.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE6E6))) {
+                                Column(Modifier.padding(14.dp)) {
+                                    Text(error.orEmpty(), color = Color(0xFF842525))
+                                    TextButton(onClick = { refresh++ }) { Text("Retry") }
+                                }
+                            }
+                            when (tab) {
+                                Tab.Home -> {
+                                    val tiles = if (isDemo) DemoRepository.dashboardTiles().map { LiveTile(it.slug, it.title, it.count, it.slug) }
+                                        else data?.tiles.orEmpty()
+                                    LiveDashboard(tiles, isDemo || data != null, onTile = { t ->
+                                        filter = t.filter
+                                        selected = null
+                                        tab = Tab.People
+                                    })
+                                }
+                                Tab.People -> LivePeopleList(shown, loading, filter, filter.isNotBlank(),
+                                    onClearFilter = { filter = "" }, onSelect = { selected = it })
+                                Tab.Alerts -> {
+                                    val alerts = if (isDemo) DemoRepository.alerts().map {
+                                        LiveAlert(it.title, it.body, it.tone.name, it.personId.orEmpty())
+                                    } else data?.alerts.orEmpty()
+                                    LiveAlerts(alerts, visible, onPerson = { selected = it })
+                                }
+                                Tab.Docs -> {
+                                    val ids = if (isDemo) emptySet() else data?.alerts.orEmpty()
+                                        .filter { it.title.contains("document", true) || it.title.contains("signing", true) }
+                                        .map { it.personId }.toSet()
+                                    LivePeopleList(if (isDemo) visible else visible.filter { it.id in ids }, loading, "", false,
+                                        onClearFilter = {}, onSelect = { selected = it }, title = "Documents",
+                                        subtitle = "People with outstanding documents or signing actions")
+                                }
+                                Tab.Settings -> LiveSettings(
+                                    title = displayTitle, url = if (isDemo) "" else session?.site?.url.orEmpty(),
+                                    onLock = { if (!isDemo) { error = null; mode = AppMode.Locked } },
+                                    onSignOut = {
+                                        val s = session
+                                        if (s != null) scope.launch { runCatching { LiveApi.logout(s.site.url, s.token) } }
+                                        runCatching { SessionStore.clear(context) }
+                                        leave()
+                                    },
+                                    onAddSite = { leave() },
+                                    isDemo = isDemo
+                                )
+                            }
+                        }
+                    }
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                SecondaryAction("Lock", onLock, Modifier.weight(1f))
-                SecondaryAction("Add site", onAddSite, Modifier.weight(1f))
-                SecondaryAction("Logout", onLogout, Modifier.weight(1f))
-            }
         }
-        if (!activeSite.demoMode) {
-            Text(
-                "Preview data: the dashboard and records below are samples until live data sync is enabled.",
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 4.dp),
-                color = AdultSafeMuted,
-                fontSize = 12.sp
-            )
-        }
-        NavRow(selectedScreen, onScreen)
-        Box(Modifier.weight(1f)) {
-            if (selectedPerson != null) {
-                PersonProfile(selectedPerson, onBack)
-            } else {
-                when (selectedScreen) {
-                    AppScreen.Dashboard -> DashboardScreen(onFilter)
-                    AppScreen.People -> PeopleScreen(selectedFilter, people, onFilter, onPerson)
-                    AppScreen.Alerts -> AlertsScreen(people, onPerson)
-                    AppScreen.Documents -> DocumentsOverview(people, onPerson)
-                    AppScreen.Settings -> SettingsScreen(activeSite, connectedSites, onSwitchSite, onAddSite, onLock, onLogout)
+    }
+}
+
+@Composable
+private fun LiveDashboard(tiles: List<LiveTile>, ready: Boolean, onTile: (LiveTile) -> Unit) {
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("Dashboard", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
+        if (ready && tiles.isEmpty()) item { MessageCard("All clear", "There are no outstanding dashboard actions.") }
+        items(tiles) { t ->
+            Card(onClick = { onTile(t) }, modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E2)),
+                shape = RoundedCornerShape(18.dp)) {
+                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(t.title, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = AdultSafeNavy)
+                    Text(t.count.toString(), fontSize = 29.sp, color = AdultSafeNavy, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -167,207 +290,87 @@ private fun AdultSafeHome(activeSite: ConnectedSite, connectedSites: List<Connec
 }
 
 @Composable
-private fun NavRow(selectedScreen: AppScreen, onScreen: (AppScreen) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        AppScreen.values().forEach { screen ->
-            Button(onClick = { onScreen(screen) }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = if (screen == selectedScreen) AdultSafeNavy else Color.White, contentColor = if (screen == selectedScreen) Color.White else AdultSafeNavy)) { Text(screen.name, fontSize = 12.sp) }
-        }
-    }
-}
-
-@Composable
-private fun DashboardScreen(onFilter: (PersonFilter) -> Unit) {
-    val tiles = DemoRepository.dashboardTiles()
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionTitle("Dashboard", "Action tiles hide when the real API returns zero counts.") }
-        tiles.groupBy { it.group }.forEach { (group, groupTiles) ->
-            item { Text(group, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = AdultSafeText) }
-            items(groupTiles) { tile -> DashboardTileCard(tile) { tile.filter?.let(onFilter) } }
-        }
-    }
-}
-
-@Composable
-private fun DashboardTileCard(tile: DashboardTile, onClick: () -> Unit) {
-    val bg = when (tile.tone) {
-        TileTone.Good -> Color(0xFFE8F8F2)
-        TileTone.Attention -> Color(0xFFFFF7ED)
-        TileTone.Warning -> Color(0xFFFFEDD5)
-        TileTone.Danger -> Color(0xFFFFE4E6)
-    }
-    Card(onClick = onClick, colors = CardDefaults.cardColors(containerColor = bg), shape = RoundedCornerShape(22.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(18.dp)) {
-            Text(tile.title, fontWeight = FontWeight.Bold, color = AdultSafeText)
-            Text(tile.count.toString(), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = AdultSafeText)
-        }
-    }
-}
-
-@Composable
-private fun PeopleScreen(filter: PersonFilter, people: List<PersonSummary>, onFilter: (PersonFilter) -> Unit, onPerson: (PersonSummary) -> Unit) {
+private fun LivePeopleList(
+    people: List<LivePerson>, loading: Boolean, filter: String, filtered: Boolean,
+    onClearFilter: () -> Unit, onSelect: (LivePerson) -> Unit,
+    title: String = "People", subtitle: String = "Volunteers and parents from your AdultSafe site"
+) {
     var search by remember { mutableStateOf("") }
-    val filtered = DemoRepository.filterPeople(filter, people).filter { it.name.contains(search, ignoreCase = true) || it.role.contains(search, ignoreCase = true) }.sortedBy { it.name.substringAfterLast(" ") }
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { SectionTitle("People", "Active filter: ${filter.name}") }
-        item { OutlinedTextField(value = search, onValueChange = { search = it }, label = { Text("Search people") }, modifier = Modifier.fillMaxWidth()) }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                listOf(PersonFilter.All, PersonFilter.NeedsAttention, PersonFilter.Documents).forEach { f -> SecondaryAction(f.name, { onFilter(f) }, Modifier.weight(1f)) }
-            }
-        }
-        if (filtered.isEmpty()) item { EmptyState("No matching people", "Clear the filter or search term.") }
-        items(filtered) { person -> PersonCard(person, onClick = { onPerson(person) }) }
-    }
-}
-
-@Composable
-private fun PersonCard(person: PersonSummary, onClick: () -> Unit) {
-    Card(onClick = onClick, shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(Color.White), modifier = Modifier.fillMaxWidth()) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(54.dp).clip(RoundedCornerShape(18.dp)).background(AdultSafeNavy), contentAlignment = Alignment.Center) { Text(person.initials, color = Color.White, fontWeight = FontWeight.Bold) }
-            Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                Text(person.name, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AdultSafeText)
-                Text(person.role, color = AdultSafeMuted)
-                Text(person.warning.ifBlank { dbsLabel(person.dbsStatus) }, color = AdultSafeNavy, fontWeight = FontWeight.SemiBold)
-            }
-        }
-    }
-}
-
-@Composable
-private fun PersonProfile(person: PersonSummary, onBack: () -> Unit) {
-    var tab by remember { mutableStateOf("Details") }
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SecondaryAction("Back", onBack) }
-        item { PersonCard(person, onClick = {}) }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                listOf("Details", "DBS / ID", "Documents", "History").forEach { name -> Button(onClick = { tab = name }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = if (tab == name) AdultSafeNavy else Color.White, contentColor = if (tab == name) Color.White else AdultSafeNavy)) { Text(name, fontSize = 11.sp) } }
-            }
-        }
-        item {
-            when (tab) {
-                "DBS / ID" -> DbsIdPanel(person)
-                "Documents" -> DocumentsPanel(person)
-                "History" -> HistoryPanel(person)
-                else -> DetailsPanel(person)
+    val matches = people.filter {
+        it.name.contains(search, true) || it.role.contains(search, true) ||
+            it.personType.contains(search, true) || it.sections.any { s -> s.contains(search, true) }
+    }.sortedBy { it.name.substringAfterLast(" ").lowercase() }
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text(title, fontSize = 26.sp, fontWeight = FontWeight.Bold) }
+        item { Text(subtitle, color = AdultSafeMuted) }
+        if (filtered) item { TextButton(onClick = onClearFilter) { Text("Clear filter: " + filter) } }
+        item { OutlinedTextField(search, { search = it }, label = { Text("Search people") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+        if (matches.isEmpty() && !loading) item { MessageCard("No matching records", "Try a different search or clear the filter.") }
+        items(matches, key = { it.id }) { p ->
+            Card(onClick = { onSelect(p) }, modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(44.dp).background(AdultSafeNavy, RoundedCornerShape(14.dp)),
+                        contentAlignment = Alignment.Center) {
+                        Text(p.initials, color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(p.name, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                        Text(p.personType.replaceFirstChar { it.uppercase() } + " · " + p.role,
+                            maxLines = 2, overflow = TextOverflow.Ellipsis, color = AdultSafeMuted, fontSize = 13.sp)
+                        if (p.warnings.isNotEmpty()) Text(p.warnings.joinToString(", "), color = Color(0xFF984719), fontSize = 12.sp)
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun DetailsPanel(person: PersonSummary) = AppCard {
-    SectionTitle("Details", "Role, section, person type and email.")
-    Text("Email: ${person.email ?: "Missing"}", color = AdultSafeMuted)
-    Text("Status: ${dbsLabel(person.dbsStatus)}", color = AdultSafeMuted)
-}
-
-@Composable
-private fun DbsIdPanel(person: PersonSummary) = AppCard {
-    SectionTitle("DBS / ID", "Three evidence items, checker details and result dates.")
-    Text("DBS status: ${dbsLabel(person.dbsStatus)}", color = AdultSafeText, fontWeight = FontWeight.SemiBold)
-    Text("DBS expiry: ${person.dbsExpiry ?: "Not set"}", color = AdultSafeMuted)
-    Spacer(Modifier.height(12.dp))
-    person.evidence.forEach { item -> EvidenceRow(item.label, item.present, item.source) }
-    if (person.evidenceCount < 3) {
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(value = "", onValueChange = {}, label = { Text("Override reason if fewer than 3 IDs") }, modifier = Modifier.fillMaxWidth())
-    }
-    Spacer(Modifier.height(10.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        SecondaryAction("Camera", {}, Modifier.weight(1f))
-        SecondaryAction("Gallery", {}, Modifier.weight(1f))
-        SecondaryAction("File", {}, Modifier.weight(1f))
-    }
-    Spacer(Modifier.height(8.dp))
-    PrimaryAction("Save ID check", {}, Modifier.fillMaxWidth(), enabled = person.evidenceCount >= 3)
-}
-
-@Composable
-private fun EvidenceRow(label: String, present: Boolean, source: String) {
-    Text("${if (present) "✓" else "○"} $label — $source", color = if (present) AdultSafeText else AdultSafeMuted)
-}
-
-@Composable
-private fun DocumentsPanel(person: PersonSummary) = AppCard {
-    SectionTitle("Documents", "Requirements first, then documents given or confirmation link.")
-    person.documents.forEach { DocumentRow(it) }
-    Spacer(Modifier.height(10.dp))
-    PrimaryAction("Record documents given", {}, Modifier.fillMaxWidth(), enabled = person.documents.any { it.state == DocumentState.Outstanding })
-    Spacer(Modifier.height(8.dp))
-    SecondaryAction("Request confirmation", {}, Modifier.fillMaxWidth(), enabled = person.documents.any { it.state == DocumentState.Outstanding || it.state == DocumentState.SigningLinkPending })
-}
-
-@Composable
-private fun DocumentRow(document: DocumentRequirement) {
-    Text("${document.name}: ${document.state.name.replace('_', ' ')}", color = AdultSafeText)
-    if (!document.signingLink.isNullOrBlank()) Text("Link pending", color = AdultSafeMuted)
-}
-
-@Composable
-private fun HistoryPanel(person: PersonSummary) = AppCard {
-    SectionTitle("History", "Audit events from the plugin will appear here.")
-    person.history.forEach { Text("• $it", color = AdultSafeMuted) }
-}
-
-@Composable
-private fun AlertsScreen(people: List<PersonSummary>, onPerson: (PersonSummary) -> Unit) {
-    val alerts = DemoRepository.alerts()
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionTitle("Alerts", "Day-to-day actions needing attention.") }
-        items(alerts) { alert -> AlertCard(alert) { alert.personId?.let { id -> people.firstOrNull { it.id == id }?.let(onPerson) } } }
+private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, onPerson: (LivePerson) -> Unit) {
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text("Alerts", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
+        if (alerts.isEmpty()) item { MessageCard("No alerts", "There are no current alerts for this site.") }
+        items(alerts) { a ->
+            Card(onClick = { people.firstOrNull { it.id == a.personId }?.let(onPerson) },
+                colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(15.dp)) {
+                    Text(a.title, fontWeight = FontWeight.Bold)
+                    Text(a.message, color = AdultSafeMuted)
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun AlertCard(alert: AdultSafeAlert, onClick: () -> Unit) = DashboardTileCard(
-    DashboardTile(slug = "alert-${alert.title.lowercase().replace(" ", "-")}", title = alert.title, count = 1, group = "Alerts", tone = alert.tone),
-    onClick
-)
-
-@Composable
-private fun DocumentsOverview(people: List<PersonSummary>, onPerson: (PersonSummary) -> Unit) {
-    val documentPeople = people.filter { person -> person.documents.any { it.state == DocumentState.Outstanding || it.state == DocumentState.FollowUpNeeded || it.state == DocumentState.SigningLinkPending } }
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionTitle("Documents", "Outstanding, follow-up and signing-link records.") }
-        items(documentPeople) { PersonCard(it, onClick = { onPerson(it) }) }
-    }
-}
-
-@Composable
-private fun SettingsScreen(activeSite: ConnectedSite, connectedSites: List<ConnectedSite>, onSwitchSite: (ConnectedSite) -> Unit, onAddSite: () -> Unit, onLock: () -> Unit, onLogout: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionTitle("Settings", "Site, security and V1-critical capability tracks.") }
-        item { AppCard { SectionTitle("Connected site", activeSite.url); Text("API: ${activeSite.apiVersion}", color = AdultSafeMuted) } }
-        item { AppCard { SectionTitle("Security", "Persistent login, visible logout and local unlock."); PrimaryAction("Lock app now", onLock, Modifier.fillMaxWidth()); Spacer(Modifier.height(8.dp)); SecondaryAction("Logout", onLogout, Modifier.fillMaxWidth()) } }
-        item { AppCard { SectionTitle("Connected sites", "Switching stays per self-hosted site."); connectedSites.forEach { site -> SecondaryAction(site.name, { onSwitchSite(site) }, Modifier.fillMaxWidth()) }; Spacer(Modifier.height(8.dp)); SecondaryAction("Add another site", onAddSite, Modifier.fillMaxWidth()) } }
-        item { AppCard { SectionTitle("V1 critical tracks", "These are required before the first serious field APK."); DemoRepository.capabilityTracks().forEach { Text("• ${it.name}: ${it.status}", color = AdultSafeText); Text(it.note, color = AdultSafeMuted); Spacer(Modifier.height(6.dp)) } } }
-    }
-}
-
-@Composable
-private fun LockScreen(site: ConnectedSite?, onUnlock: () -> Unit) {
-    Surface(Modifier.fillMaxSize(), color = AdultSafeBackground) {
-        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Logo(size = 96)
-            Spacer(Modifier.height(16.dp))
-            Text("AdultSafe locked", fontWeight = FontWeight.Bold, fontSize = 28.sp, color = AdultSafeNavy)
-            Text(site?.name ?: "No active site", color = AdultSafeMuted)
-            Spacer(Modifier.height(20.dp))
-            PrimaryAction("Unlock for testing", onUnlock)
+private fun LiveSettings(title: String, url: String, onLock: () -> Unit, onSignOut: () -> Unit, onAddSite: () -> Unit, isDemo: Boolean) {
+    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
+        item { AppCard {
+            SectionTitle("Connected site", title)
+            if (url.isNotBlank()) Text(url, color = AdultSafeMuted)
+        } }
+        item { AppCard {
+            SectionTitle("Security", "Your session is stored encrypted on this device.")
+            if (!isDemo) {
+                Spacer(Modifier.height(10.dp))
+                Button(onClick = onLock, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Lock, null); Text(" Lock app") }
+            }
             Spacer(Modifier.height(8.dp))
-            Text("Biometric prompt and PIN fallback are V1-critical before field testing.", color = AdultSafeMuted)
-        }
+            OutlinedButton(onClick = onSignOut, modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
+        } }
+        item { AppCard {
+            SectionTitle("Sites")
+            Text("Connect another AdultSafe WordPress installation.", color = AdultSafeMuted)
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onAddSite, modifier = Modifier.fillMaxWidth()) { Text("Connect another site") }
+        } }
     }
 }
 
 @Composable
-private fun EmptyState(title: String, body: String) = AppCard { SectionTitle(title, body) }
-
-private fun dbsLabel(status: DbsStatus): String = when (status) {
-    DbsStatus.AwaitingProfileCompletion -> "Awaiting profile completion"
-    DbsStatus.DbsRequested -> "DBS requested"
-    DbsStatus.AwaitingIdCheck -> "Awaiting ID check"
-    DbsStatus.ResultReturned -> "Result returned"
+private fun MessageCard(title: String, message: String) {
+    AppCard { SectionTitle(title); Text(message, color = AdultSafeMuted) }
 }

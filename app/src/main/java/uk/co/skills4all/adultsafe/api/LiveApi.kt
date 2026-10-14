@@ -108,6 +108,11 @@ object LiveApi {
         LiveHome(p, tiles, alerts)
     }
 
+    suspend fun filteredPeople(base: String, token: String, filter: String): List<LivePerson> = withContext(Dispatchers.IO) {
+        require(filter.matches(Regex("[a-z0-9_-]+"))) { "Invalid filter" }
+        request(base, token, "/dashboard/tile/" + filter).optJSONArray("people").objects().map(::person).filter { !it.demo }
+    }
+
     suspend fun personDetail(base: String, token: String, id: String): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/people/" + id)
     }

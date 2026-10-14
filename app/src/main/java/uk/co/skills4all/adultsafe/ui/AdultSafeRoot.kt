@@ -4,6 +4,9 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.app.Activity
 import android.os.Build
+import android.os.SystemClock
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -107,6 +110,28 @@ fun AdultSafeRoot() {
             })
         }
     }
+    // Re-lock confidential screens after returning from background inactivity.
+    // Brief camera and document picker trips do not invalidate in-progress work.
+    var stoppedAt by remember { mutableLongStateOf(0L) }
+    DisposableEffect(activity) {
+        if (activity == null) onDispose { }
+        else {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_STOP && mode == AppMode.ConnectedLive) {
+                    stoppedAt = SystemClock.elapsedRealtime()
+                } else if (event == Lifecycle.Event.ON_START && stoppedAt > 0L) {
+                    if (mode == AppMode.ConnectedLive &&
+                        SystemClock.elapsedRealtime() - stoppedAt >= 30000L) {
+                        mode = AppMode.Locked
+                    }
+                    stoppedAt = 0L
+                }
+            }
+            activity.lifecycle.addObserver(observer)
+            onDispose { activity.lifecycle.removeObserver(observer) }
+        }
+    }
+
     fun unlock() {
         val manager = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (!manager.isDeviceSecure) {

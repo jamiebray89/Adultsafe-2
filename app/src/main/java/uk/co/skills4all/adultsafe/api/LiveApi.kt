@@ -27,6 +27,7 @@ data class LiveTile(val key: String, val title: String, val count: Int, val filt
 data class LiveAlert(val title: String, val message: String, val severity: String, val personId: String)
 data class LiveHome(val people: List<LivePerson>, val tiles: List<LiveTile>, val alerts: List<LiveAlert>)
 data class LiveEvidence(val id: String, val name: String, val documentKey: String)
+data class LiveDevice(val id: String, val name: String, val lastUsed: String, val revoked: Boolean)
 data class LiveDocument(val key: String, val label: String, val state: String)
 
 private fun JSONArray?.objects(): List<JSONObject> =
@@ -171,6 +172,18 @@ object LiveApi {
         request(base, token, "/app/logout", "POST", JSONObject())
         Unit
     }
+    suspend fun devices(base: String, token: String): List<LiveDevice> = withContext(Dispatchers.IO) {
+        request(base, token, "/app/devices").optJSONArray("devices").objects().map {
+            LiveDevice(it.optString("id"), it.optString("device_name"),
+                it.optString("last_used"), it.optBoolean("revoked", false))
+        }
+    }
+    suspend fun revokeDevice(base: String, token: String, deviceId: String): Unit = withContext(Dispatchers.IO) {
+        require(deviceId.startsWith("dev_")) { "Invalid device identifier." }
+        request(base, token, "/app/devices/revoke", "POST", JSONObject().put("device_id", deviceId))
+        Unit
+    }
+
     suspend fun validate(base: String, token: String): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/app/me")
     }

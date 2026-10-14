@@ -1,0 +1,79 @@
+name: Android updateable APK (stable signing)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          "$SDKMANAGER" --licenses <<'EOF' || true
+          y
+          y
+          y
+          y
+          y
+          y
+          y
+          y
+          EOF
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Restore permanent signing key
+        shell: bash
+        env:
+          ADULTSAFE_KEYSTORE_BASE64: ${{ secrets.ADULTSAFE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ADULTSAFE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ADULTSAFE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ADULTSAFE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ADULTSAFE_KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "::error::Set all four AdultSafe signing secrets before running an updateable APK build. Do not use a new debug key."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$ADULTSAFE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/adultsafe-signing.jks"
+          test -s "$RUNNER_TEMP/adultsafe-signing.jks"
+          echo "ADULTSAFE_RELEASE_STORE_FILE=$RUNNER_TEMP/adultsafe-signing.jks" >> "$GITHUB_ENV"
+          echo "ADULTSAFE_RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ADULTSAFE_RELEASE_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ADULTSAFE_RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build updateable debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Check APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: adultsafe-updateable-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30

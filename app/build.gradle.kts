@@ -32,6 +32,12 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // The normal developer workflow can keep using its local debug key.
+            // The updateable-APK workflow restores a persistent, privately held
+            // signing key and sets ADULTSAFE_RELEASE_STORE_FILE instead.
+            if (!System.getenv("ADULTSAFE_RELEASE_STORE_FILE").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         release {
             isMinifyEnabled = false

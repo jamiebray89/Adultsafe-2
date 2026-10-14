@@ -10,6 +10,8 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -118,11 +120,9 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         item { Text(person.name, fontSize = 24.sp, color = uk.co.skills4all.adultsafe.ui.theme.AdultSafeNavy) }
         item { Text(person.personType.replaceFirstChar { it.uppercase() } + " · " + person.role, color = AdultSafeMuted) }
         item {
-            androidx.compose.foundation.horizontalScroll(rememberScrollState()).let { scrollModifier ->
-                Row(scrollModifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("Details", "DBS / ID", "Documents", "History").forEach { tab ->
-                        FilterChip(selected = page == tab, onClick = { page = tab }, label = { Text(tab) })
-                    }
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Details", "DBS / ID", "Documents", "History").forEach { tab ->
+                    FilterChip(selected = page == tab, onClick = { page = tab }, label = { Text(tab) })
                 }
             }
         }

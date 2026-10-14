@@ -82,7 +82,10 @@ fun AdultSafeRoot() {
                 val scopes = me.optJSONArray("permissions")?.let { array ->
                     (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
                 } ?: active.permissions
-                val updated = active.copy(permissions = scopes)
+                val siteVersion = me.optJSONObject("site")?.optString("api_version").orEmpty()
+                val updatedSite = if (siteVersion.isNotBlank()) active.site.copy(apiVersion = siteVersion) else active.site
+                AdultSafeApi.requireSupportedVersion(updatedSite)
+                val updated = active.copy(site = updatedSite, permissions = scopes)
                 SessionStore.save(context, updated)
                 session = updated
                 savedSites = SessionStore.saved(context)

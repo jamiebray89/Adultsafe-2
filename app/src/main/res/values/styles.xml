@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.AdultSafe" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowSplashScreenBackground">#071F49</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#0E6B8F</item>
+    </style>
+</resources>

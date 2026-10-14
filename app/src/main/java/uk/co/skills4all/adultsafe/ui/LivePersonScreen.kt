@@ -58,7 +58,12 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     var documents by remember(person.id) { mutableStateOf<List<LiveDocument>>(emptyList()) }
     var evidence by remember(person.id) { mutableStateOf<List<LiveEvidence>>(emptyList()) }
     var history by remember(person.id) { mutableStateOf<JSONArray?>(null) }
+    var metadata by remember { mutableStateOf<JSONObject?>(null) }
 
+    val canEditPeople = session.permissions.contains("people.write") || session.roles.contains("manager")
+    val canEditDbs = session.permissions.contains("dbs.write") || session.roles.any { it == "manager" || it == "dbs_lead" }
+    val canRequirements = session.permissions.contains("documents.requirements.write") || session.roles.any { it == "manager" || it == "document_admin" }
+    val canIdCheck = session.permissions.contains("id.write") || session.roles.any { it == "manager" || it == "dbs_lead" || it == "id_checker" }
     val canId = session.permissions.contains("id.upload")
     val canSign = session.permissions.contains("documents.manage")
     val canRequest = session.permissions.contains("documents.confirmation.request")
@@ -69,6 +74,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         error = null
         try {
             details = LiveApi.personDetail(url, token, person.id)
+            metadata = LiveApi.metadata(url, token)
             dbs = LiveApi.dbs(url, token, person.id)
             idCheck = LiveApi.idCheck(url, token, person.id)
             documents = LiveApi.documents(url, token, person.id)
@@ -138,7 +144,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
             "Details" -> item {
                 val personDetail = details
                 if (personDetail != null) {
-                    PersonEditCard(person, personDetail, busy, onSave = { values ->
+                    PersonEditCard(person, personDetail, metadata, busy, canEditPeople, onSave = { values ->
                         update { LiveApi.updatePerson(url, token, person.id, values) }
                     })
                 }
@@ -146,14 +152,14 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
             "DBS / ID" -> {
                 item {
                     val record = dbs
-                    if (record != null) DbsEditCard(record, busy, onSave = { changes ->
+                    if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onSave = { changes ->
                         update { LiveApi.updateDbs(url, token, person.id, changes) }
                     })
                 }
                 item {
                     val record = idCheck
                     if (record != null) IdEvidenceCard(
-                        record, evidence, busy, canId, context,
+                        record, evidence, busy, canId, canIdCheck, context,
                         onUpload = { name, mime, bytes, key ->
                             update { LiveApi.upload(url, token, person.id, name, mime, bytes, key) }
                         },
@@ -163,7 +169,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
             }
             "Documents" -> item {
                 DocumentsEditCard(
-                    documents = documents, busy = busy, canSign = canSign, canRequest = canRequest,
+                    documents = documents, busy = busy, canSign = canSign, canRequest = canRequest, canRequirements = canRequirements,
                     onRequirements = { required, notRequired ->
                         update { LiveApi.updateRequirements(url, token, person.id, required, notRequired) }
                     },
@@ -193,32 +199,82 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
 }
 
 @Composable
-private fun PersonEditCard(person: LivePerson, details: JSONObject, busy: Boolean, onSave: (JSONObject) -> Unit) {
-    var name by remember(person.id) { mutableStateOf(person.name) }
-    var role by remember(person.id) { mutableStateOf(person.role) }
-    var membership by remember(person.id) { mutableStateOf(details.optString("membership_number")) }
-    var personType by remember(person.id) { mutableStateOf(details.optString("person_type", person.personType)) }
+private fun PersonEditCard(
+    person: LivePerson, details: JSONObject, metadata: JSONObject?, busy: Boolean, canEdit: Boolean,
+    onSave: (JSONObject) -> Unit
+) {
+    var name by remember(details.toString()) { mutableStateOf(details.optString("name", person.name)) }
+    var role by remember(details.toString()) { mutableStateOf(details.optString("role").ifBlank { person.role }) }
+    var email by remember(details.toString()) { mutableStateOf(details.optString("email")) }
+    var membership by remember(details.toString()) { mutableStateOf(details.optString("membership_number")) }
+    var personType by remember(details.toString()) { mutableStateOf(details.optString("person_type", person.personType)) }
+    var childYear by remember(details.toString()) { mutableStateOf(details.optString("child_year_of_birth")) }
+    val sectionKeys = details.optJSONArray("sections")?.let { array ->
+        (0 until array.length()).map { array.optString(it) }
+    } ?: person.sections
+    val selectedSections = remember(details.toString()) { mutableStateListOf<String>().apply { addAll(sectionKeys) } }
+    var roleMenu by remember { mutableStateOf(false) }
+    val choices = metadata?.optJSONObject("roles")
     AppCard {
-        SectionTitle("Person details", "Changes are saved to this AdultSafe site.")
+        SectionTitle("Person details", "Details saved on your AdultSafe WordPress site.")
         Spacer(Modifier.height(10.dp))
-        OutlinedTextField(name, { name = it }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(role, { role = it }, label = { Text("Role") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(membership, { membership = it }, label = { Text("Membership number") }, modifier = Modifier.fillMaxWidth())
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FilterChip(personType == "volunteer", onClick = { personType = "volunteer" }, label = { Text("Volunteer") })
-            FilterChip(personType != "volunteer", onClick = { personType = "parent_carer" }, label = { Text("Parent/carer") })
+        OutlinedTextField(name, { name = it }, label = { Text("Full name") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(email, { email = it }, label = { Text("Email address") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text("Role", color = AdultSafeMuted)
+        Box {
+            OutlinedButton(onClick = { roleMenu = true }, enabled = canEdit && choices != null, modifier = Modifier.fillMaxWidth()) {
+                Text(choices?.optString(role).orEmpty().ifBlank { role.ifBlank { "Select a role" } })
+            }
+            DropdownMenu(expanded = roleMenu, onDismissRequest = { roleMenu = false }) {
+                val iter = choices?.keys()
+                if (iter != null) while (iter.hasNext()) {
+                    val key = iter.next()
+                    DropdownMenuItem(text = { Text(choices.optString(key)) }, onClick = {
+                        role = key
+                        roleMenu = false
+                    })
+                }
+            }
         }
-        Text("Sections: " + person.sections.joinToString(", ").ifBlank { "None" }, color = AdultSafeMuted)
+        OutlinedTextField(membership, { membership = it }, label = { Text("Membership number") }, enabled = canEdit, modifier = Modifier.fillMaxWidth())
+        Text("Person type", color = AdultSafeMuted)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(personType == "volunteer", onClick = { if (canEdit) personType = "volunteer" }, label = { Text("Volunteer") })
+            FilterChip(personType == "parent_carer", onClick = { if (canEdit) personType = "parent_carer" }, label = { Text("Parent / carer") })
+        }
+        if (personType == "parent_carer") {
+            OutlinedTextField(childYear, { childYear = it }, label = { Text("Child's birth year (no child's name)") },
+                enabled = canEdit, modifier = Modifier.fillMaxWidth(), singleLine = true)
+        }
+        Text("Sections", color = AdultSafeMuted)
+        val sectionChoices = metadata?.optJSONObject("sections")
+        if (sectionChoices == null) Text(sectionKeys.joinToString(", ").ifBlank { "None" }, color = AdultSafeMuted)
+        else {
+            val iterator = sectionChoices.keys()
+            while (iterator.hasNext()) {
+                val key = iterator.next()
+                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(checked = key in selectedSections, enabled = canEdit, onCheckedChange = { yes ->
+                        if (yes) selectedSections.add(key) else selectedSections.remove(key)
+                    })
+                    Text(sectionChoices.optString(key))
+                }
+            }
+        }
         Spacer(Modifier.height(10.dp))
-        Button(onClick = {
-            onSave(JSONObject().put("name", name.trim()).put("role", role.trim())
-                .put("membership_number", membership.trim()).put("person_type", personType))
-        }, enabled = !busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Save details") }
+        if (canEdit) Button(onClick = {
+            onSave(JSONObject().put("name", name.trim()).put("email", email.trim()).put("role", role.trim())
+                .put("membership_number", membership.trim()).put("person_type", personType)
+                .put("child_year_of_birth", childYear.trim()).put("sections", JSONArray(selectedSections.toList())))
+        }, enabled = !busy && name.isNotBlank() && role.isNotBlank() &&
+            (childYear.isBlank() || childYear.matches(Regex("(19|20)[0-9]{2}"))),
+            modifier = Modifier.fillMaxWidth()) { Text("Save details") }
+        else Text("Read-only account: you cannot edit volunteer or parent details.", color = AdultSafeMuted)
     }
 }
 
 @Composable
-private fun DbsEditCard(record: JSONObject, busy: Boolean, onSave: (JSONObject) -> Unit) {
+private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onSave: (JSONObject) -> Unit) {
     var requested by remember(record.toString()) { mutableStateOf(record.optString("requested_date")) }
     var submitted by remember(record.toString()) { mutableStateOf(record.optString("submitted_date")) }
     var result by remember(record.toString()) { mutableStateOf(record.optString("result_received_date")) }
@@ -234,13 +290,13 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, onSave: (JSONObject) 
         Button(onClick = {
             onSave(JSONObject().put("requested_date", requested).put("submitted_date", submitted)
                 .put("result_received_date", result).put("expiry_date", expiry))
-        }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
+        }, enabled = !busy && canEdit, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
     }
 }
 
 @Composable
 private fun IdEvidenceCard(
-    record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, context: Context,
+    record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context,
     onUpload: (String, String, ByteArray, String) -> Unit, onCheck: (JSONObject) -> Unit
 ) {
     var checker by remember(record.toString()) { mutableStateOf(record.optString("checker_name")) }
@@ -335,7 +391,7 @@ private fun IdEvidenceCard(
         Button(onClick = { onCheck(JSONObject().put("checker_name", checker)
                 .put("checker_membership_number", membership).put("confirm_checked_now", true)) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = canId && !busy && evidence.size >= record.optInt("minimum_evidence", 3)
+            enabled = canIdCheck && !busy && evidence.size >= record.optInt("minimum_evidence", 3)
                 && checker.isNotBlank() && membership.isNotBlank()) {
             Text("Complete ID check")
         }
@@ -345,7 +401,7 @@ private fun IdEvidenceCard(
 
 @Composable
 private fun DocumentsEditCard(
-    documents: List<LiveDocument>, busy: Boolean, canSign: Boolean, canRequest: Boolean,
+    documents: List<LiveDocument>, busy: Boolean, canSign: Boolean, canRequest: Boolean, canRequirements: Boolean,
     onRequirements: (List<String>, List<String>) -> Unit, onSign: (List<String>) -> Unit,
     onRequest: (List<String>) -> Unit
 ) {
@@ -369,7 +425,7 @@ private fun DocumentsEditCard(
                     Text(doc.state.replace("_", " "), color = AdultSafeMuted, fontSize = 12.sp)
                 }
                 if (doc.state != "signed") {
-                    Checkbox(checked = doc.key in notRequired, onCheckedChange = { yes ->
+                    Checkbox(checked = doc.key in notRequired, enabled = canRequirements, onCheckedChange = { yes ->
                         if (yes) notRequired.add(doc.key) else notRequired.remove(doc.key)
                     })
                     Text("N/R", fontSize = 12.sp)
@@ -379,7 +435,7 @@ private fun DocumentsEditCard(
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = {
             onRequirements(documents.filter { it.key !in notRequired }.map { it.key }, notRequired.toList())
-        }, enabled = !busy && canSign, modifier = Modifier.fillMaxWidth()) { Text("Save requirements") }
+        }, enabled = !busy && canRequirements, modifier = Modifier.fillMaxWidth()) { Text("Save requirements") }
         Button(onClick = { onSign(selected.toList()) }, enabled = !busy && canSign && selected.isNotEmpty(),
             modifier = Modifier.fillMaxWidth()) { Text("Record documents given & sign") }
         OutlinedButton(onClick = { onRequest(selected.toList()) }, enabled = !busy && canRequest && selected.isNotEmpty(),

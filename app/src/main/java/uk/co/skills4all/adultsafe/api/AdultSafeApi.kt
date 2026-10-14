@@ -26,6 +26,21 @@ object AdultSafeApi {
     private const val API = "/wp-json/adultsafe/v1"
     private const val TIMEOUT_MS = 10000
 
+    /** Older WordPress versions lack the server-side restrictions required for ID/DBS data. */
+    fun requireSupportedVersion(site: ConnectedSite) {
+        val numbers = Regex("^([0-9]+)\\.([0-9]+)\\.([0-9]+)").find(site.apiVersion)
+            ?.groupValues?.drop(1)?.mapNotNull { it.toIntOrNull() }
+        if (numbers == null || numbers.size != 3 ||
+            numbers[0] < 1 ||
+            (numbers[0] == 1 && numbers[1] < 39) ||
+            (numbers[0] == 1 && numbers[1] == 39 && numbers[2] < 7)
+        ) {
+            throw AdultSafeConnectionException(
+                "Update the AdultSafe Records WordPress plugin to version 1.39.7 or later before using this Android app. This protects private DBS and ID records."
+            )
+        }
+    }
+
     fun normaliseSiteUrl(input: String): String {
         val text = input.trim().trimEnd('/')
         val uri = try { URI(text) } catch (_: Exception) { null }
@@ -59,6 +74,7 @@ object AdultSafeApi {
             if (username.isBlank() || password.isBlank())
                 throw AdultSafeConnectionException("Enter your email or username and password.")
             val site = discoverSite(input)
+            requireSupportedVersion(site)
             val body = JSONObject()
                 .put("username", username.trim())
                 .put("password", password)
@@ -77,6 +93,7 @@ object AdultSafeApi {
         if (token.isBlank() || token == "null")
             throw AdultSafeConnectionException("This invite QR code is missing its invite token.")
         val site = discoverSite(url)
+        requireSupportedVersion(site)
         val body = JSONObject()
             .put("invite_token", token)
             .put("device_name", android.os.Build.MODEL.ifBlank { "Android device" })

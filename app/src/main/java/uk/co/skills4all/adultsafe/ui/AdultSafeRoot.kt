@@ -81,9 +81,12 @@ fun AdultSafeRoot() {
         scope.launch {
             try {
                 val me = LiveApi.validate(active.site.url, active.token)
-                val scopes = me.optJSONArray("permissions")?.let { array ->
-                    (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
-                } ?: active.permissions
+                // A missing permissions array is not permission to reuse cached privileges.
+                val permissionsJson = me.optJSONArray("permissions")
+                    ?: throw AdultSafeConnectionException("The site did not return current AdultSafe permissions. Your account remains locked.")
+                val scopes = (0 until permissionsJson.length()).mapNotNull {
+                    permissionsJson.optString(it).takeIf(String::isNotBlank)
+                }
                 val siteVersion = me.optJSONObject("site")?.optString("api_version").orEmpty()
                 val updatedSite = if (siteVersion.isNotBlank()) active.site.copy(apiVersion = siteVersion) else active.site
                 AdultSafeApi.requireSupportedVersion(updatedSite)
@@ -342,7 +345,7 @@ fun AdultSafeRoot() {
                                 Tab.People -> LivePeopleList(shown, loading, filter, filter.isNotBlank(),
                                     onClearFilter = { filter = "" }, onSelect = { selected = it },
                                     ready = isDemo || data != null,
-                                    onCreate = if (!isDemo && (session?.permissions?.contains("people.write") == true || session?.roles?.contains("manager") == true)) { { showCreate = true } } else null)
+                                    onCreate = if (!isDemo && session?.permissions?.contains("people.write") == true) { { showCreate = true } } else null)
                                 Tab.Alerts -> {
                                     val alerts = if (isDemo) DemoRepository.alerts().map {
                                         LiveAlert(it.title, it.body, it.tone.name, it.personId.orEmpty())
@@ -390,18 +393,34 @@ fun AdultSafeRoot() {
 
 @Composable
 private fun LiveDashboard(tiles: List<LiveTile>, ready: Boolean, onTile: (LiveTile) -> Unit) {
+    // The WordPress API may omit zero-count tiles: the Documents heading must not disappear.
+    val documents = tiles.filter { it.key.contains("document", ignoreCase = true) ||
+        it.filter.contains("document", ignoreCase = true) }
+    val otherActions = tiles.filterNot { it in documents }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Dashboard", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
-        if (ready && tiles.isEmpty()) item { MessageCard("All clear", "There are no outstanding dashboard actions.") }
-        items(tiles) { t ->
-            Card(onClick = { onTile(t) }, modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E2)),
-                shape = RoundedCornerShape(18.dp)) {
-                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(t.title, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = AdultSafeNavy)
-                    Text(t.count.toString(), fontSize = 29.sp, color = AdultSafeNavy, fontWeight = FontWeight.Bold)
-                }
+        if (ready && tiles.isEmpty()) {
+            item { MessageCard("All clear", "There are no outstanding dashboard actions.") }
+        }
+        items(otherActions) { tile -> DashboardActionTile(tile, onTile) }
+        if (ready) {
+            item { SectionTitle("Documents", "People with outstanding documents or signing actions") }
+            if (documents.isEmpty()) {
+                item { Text("No outstanding document actions.", color = AdultSafeMuted) }
             }
+        }
+        items(documents) { tile -> DashboardActionTile(tile, onTile) }
+    }
+}
+
+@Composable
+private fun DashboardActionTile(tile: LiveTile, onTile: (LiveTile) -> Unit) {
+    Card(onClick = { onTile(tile) }, modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E2)),
+        shape = RoundedCornerShape(18.dp)) {
+        Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(tile.title, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = AdultSafeNavy)
+            Text(tile.count.toString(), fontSize = 29.sp, color = AdultSafeNavy, fontWeight = FontWeight.Bold)
         }
     }
 }

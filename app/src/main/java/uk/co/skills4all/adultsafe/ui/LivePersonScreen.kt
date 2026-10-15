@@ -63,10 +63,10 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     var history by remember(person.id) { mutableStateOf<JSONArray?>(null) }
     var metadata by remember { mutableStateOf<JSONObject?>(null) }
 
-    val canEditPeople = session.permissions.contains("people.write") || session.roles.contains("manager")
-    val canEditDbs = session.permissions.contains("dbs.write") || session.roles.any { it == "manager" || it == "dbs_lead" }
-    val canRequirements = session.permissions.contains("documents.requirements.write") || session.roles.any { it == "manager" || it == "document_admin" }
-    val canIdCheck = session.permissions.contains("id.write") || session.roles.any { it == "manager" || it == "dbs_lead" || it == "id_checker" }
+    val canEditPeople = session.permissions.contains("people.write")
+    val canEditDbs = session.permissions.contains("dbs.write")
+    val canRequirements = session.permissions.contains("documents.requirements.write")
+    val canIdCheck = session.permissions.contains("id.write")
     val canId = session.permissions.contains("id.upload")
     val canSign = session.permissions.contains("documents.manage")
     val canRequest = session.permissions.contains("documents.confirmation.request")

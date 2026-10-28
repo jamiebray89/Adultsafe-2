@@ -79,7 +79,9 @@ object LiveApi {
                 con.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                 con.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
             }
-            return response(con)
+            try { return response(con) } catch (e: AdultSafeConnectionException) {
+                throw AdultSafeConnectionException("API " + path + ": " + (e.message ?: "Request failed"))
+            }
         } finally { con.disconnect() }
     }
 

@@ -1,6 +1,7 @@
 package uk.co.skills4all.adultsafe.ui
 
 import android.app.KeyguardManager
+import androidx.activity.compose.BackHandler
 import android.content.Context
 import android.app.Activity
 import android.os.Build
@@ -73,6 +74,7 @@ fun AdultSafeRoot() {
     var refresh by remember { mutableIntStateOf(0) }
     var unlocking by remember { mutableStateOf(false) }
     var signingOut by remember { mutableStateOf(false) }
+    var confirmExit by remember { mutableStateOf(false) }
 
     fun validateUnlockedSession() {
         val active = session ?: return
@@ -226,6 +228,27 @@ fun AdultSafeRoot() {
                 filter = ""
                 refresh++
             }
+        )
+    }
+
+    BackHandler(enabled = mode == AppMode.ConnectedLive || mode == AppMode.ConnectedDemo) {
+        when {
+            showCreate -> showCreate = false
+            selected != null -> selected = null
+            tab != Tab.Home -> { tab = Tab.Home; filter = "" }
+            else -> confirmExit = true
+        }
+    }
+    if (confirmExit) {
+        AlertDialog(
+            onDismissRequest = { confirmExit = false },
+            title = { Text("Exit AdultSafe?") },
+            text = { Text("Close the app? Your sign-in will be kept for next time.") },
+            confirmButton = { TextButton(onClick = {
+                confirmExit = false
+                (context as? Activity)?.finish()
+            }) { Text("Exit") } },
+            dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("Cancel") } }
         )
     }
 

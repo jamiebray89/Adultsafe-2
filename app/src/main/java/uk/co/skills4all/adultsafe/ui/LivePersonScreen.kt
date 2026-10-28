@@ -423,7 +423,17 @@ private fun IdEvidenceCard(
     AppCard {
         SectionTitle("ID evidence", "ID photos upload directly to the site's private evidence store.")
         Text(evidence.size.toString() + " uploaded · minimum " + record.optInt("minimum_evidence", 3), color = AdultSafeMuted)
-        evidence.forEach { e -> Text("✓ " + e.name.ifBlank { e.documentKey }) }
+        evidence.forEachIndexed { index, e ->
+            val label = e.name.ifBlank { e.documentKey }.replace('_', ' ').trim()
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${index + 1}.", color = AdultSafeMuted)
+                Text(label.ifBlank { "ID document" })
+            }
+        }
+        if (evidence.isNotEmpty()) Text(
+            "Stored evidence is listed above. Viewing original files requires a verified authenticated retrieval API.",
+            color = AdultSafeMuted, fontSize = 12.sp
+        )
         if (uploadError != null) Text(uploadError.orEmpty(), color = MaterialTheme.colorScheme.error)
         if (canId) {
             Spacer(Modifier.height(10.dp))

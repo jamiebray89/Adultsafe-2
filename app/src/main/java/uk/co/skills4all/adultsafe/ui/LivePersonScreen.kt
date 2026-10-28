@@ -474,7 +474,7 @@ private fun DocumentsEditCard(
                     Checkbox(checked = doc.key in notRequired, enabled = canRequirements, onCheckedChange = { yes ->
                         if (yes) notRequired.add(doc.key) else notRequired.remove(doc.key)
                     })
-                    Text("N/R", fontSize = 12.sp)
+                    Text("Not required", fontSize = 12.sp)
                 }
             }
         }

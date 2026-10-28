@@ -1,6 +1,7 @@
 package uk.co.skills4all.adultsafe.ui
 
 import android.Manifest
+import android.content.Intent
 import android.app.DatePickerDialog
 import androidx.core.content.FileProvider
 import java.io.File
@@ -355,10 +356,45 @@ private fun IdEvidenceCard(
     var checker by remember(record.toString()) { mutableStateOf(record.optString("checker_name")) }
     var membership by remember(record.toString()) { mutableStateOf(record.optString("checker_membership_number")) }
     var uploadError by remember { mutableStateOf<String?>(null) }
+    val evidenceTypes = listOf("Passport", "Driving Licence", "Birth Certificate", "Other ID")
+    var chosenType by remember { mutableStateOf("Passport") }
+    var typeMenuExpanded by remember { mutableStateOf(false) }
     fun handleBytes(mime: String, bytes: ByteArray) {
         if (bytes.isEmpty() || bytes.size > 15*1024*1024) { uploadError = "Please select a file up to 15 MB."; return }
-        val next = (evidence.size + 1).coerceAtMost(10)
-        onUpload("ID evidence " + next, mime, bytes, "id_document_" + next)
+        val key = chosenType.lowercase().replace(" ", "_")
+        onUpload(chosenType, mime, bytes, key)
+    }
+    var viewingEvidence by remember { mutableStateOf(false) }
+    fun viewStoredEvidence(item: LiveEvidence) {
+        if (viewingEvidence) return
+        viewingEvidence = true
+        uploadError = null
+        scope.launch {
+            try {
+                val (mime, bytes) = LiveApi.viewEvidence(session.site.url, session.token, item.id)
+                val extension = when (mime) {
+                    "image/jpeg" -> ".jpg"
+                    "image/png" -> ".png"
+                    "image/webp" -> ".webp"
+                    else -> ".pdf"
+                }
+                val file = withContext(Dispatchers.IO) {
+                    val dir = File(context.cacheDir, "adultsafe_view").apply { mkdirs() }
+                    dir.listFiles()?.forEach { it.delete() }
+                    File.createTempFile("evidence_", extension, dir).apply { writeBytes(bytes) }
+                }
+                val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, mime)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "View stored ID evidence"))
+            } catch (e: Exception) {
+                uploadError = e.message ?: "Could not open stored evidence."
+            } finally {
+                viewingEvidence = false
+            }
+        }
     }
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         onExternalEvidenceActivity(false)
@@ -444,19 +480,33 @@ private fun IdEvidenceCard(
         SectionTitle("ID evidence", "ID photos upload directly to the site's private evidence store.")
         Text(evidence.size.toString() + " uploaded · minimum " + record.optInt("minimum_evidence", 3), color = AdultSafeMuted)
         evidence.forEachIndexed { index, e ->
-            val label = e.name.ifBlank { e.documentKey }.replace('_', ' ').trim()
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val label = e.name.ifBlank { e.documentKey }.replace('_', ' ').trim().ifBlank { "ID document" }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text("${index + 1}.", color = AdultSafeMuted)
-                Text(label.ifBlank { "ID document" })
+                Text(label, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = { viewStoredEvidence(e) },
+                    enabled = !viewingEvidence && e.id.isNotBlank()) { Text("View " + label) }
             }
         }
         if (evidence.isNotEmpty()) Text(
-            "Stored evidence is listed above. Viewing original files requires a verified authenticated retrieval API.",
+            "Files open temporarily in an Android viewer. Only authorised users can retrieve them.",
             color = AdultSafeMuted, fontSize = 12.sp
         )
         if (uploadError != null) Text(uploadError.orEmpty(), color = MaterialTheme.colorScheme.error)
         if (canId) {
             Spacer(Modifier.height(10.dp))
+            Box {
+                OutlinedButton(onClick = { typeMenuExpanded = true }) { Text("ID type: " + chosenType + " ▾") }
+                DropdownMenu(expanded = typeMenuExpanded, onDismissRequest = { typeMenuExpanded = false }) {
+                    evidenceTypes.forEach { type ->
+                        DropdownMenuItem(text = { Text(type) }, onClick = {
+                            chosenType = type
+                            typeMenuExpanded = false
+                        })
+                    }
+                }
+            }
             Button(onClick = {
                 if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
                     captureFullResolution()

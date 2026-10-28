@@ -75,6 +75,7 @@ fun AdultSafeRoot() {
     var unlocking by remember { mutableStateOf(false) }
     var signingOut by remember { mutableStateOf(false) }
     var confirmExit by remember { mutableStateOf(false) }
+    var externalEvidenceActivity by remember { mutableStateOf(false) }
 
     fun validateUnlockedSession() {
         val active = session ?: return
@@ -127,7 +128,7 @@ fun AdultSafeRoot() {
                 if (event == Lifecycle.Event.ON_STOP && mode == AppMode.ConnectedLive) {
                     stoppedAt = SystemClock.elapsedRealtime()
                 } else if (event == Lifecycle.Event.ON_START && stoppedAt > 0L) {
-                    if (mode == AppMode.ConnectedLive &&
+                    if (mode == AppMode.ConnectedLive && !externalEvidenceActivity &&
                         SystemClock.elapsedRealtime() - stoppedAt >= 30000L) {
                         mode = AppMode.Locked
                     }
@@ -336,7 +337,7 @@ fun AdultSafeRoot() {
                 Box(Modifier.padding(padding).fillMaxSize()) {
                     if (selected != null && session != null && !isDemo) {
                         LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
-                            onChanged = { refresh++ })
+                            onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it })
                     } else if (selected != null && isDemo) {
                         Column(Modifier.padding(20.dp)) {
                             TextButton(onClick = { selected = null }) { Text("← Back") }

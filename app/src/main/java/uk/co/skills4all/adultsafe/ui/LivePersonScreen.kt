@@ -47,7 +47,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.ResolverStyle
 
 @Composable
-fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit, onChanged: () -> Unit) {
+fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit, onChanged: () -> Unit,
+    onExternalEvidenceActivity: (Boolean) -> Unit) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val url = session.site.url
@@ -170,7 +171,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 item {
                     val record = idCheck
                     if (person.personType == "volunteer" && record != null) IdEvidenceCard(
-                        record, evidence, busy, canId, canIdCheck, context,
+                        record, evidence, busy, canId, canIdCheck, context, onExternalEvidenceActivity,
                         onUpload = { name, mime, bytes, key ->
                             update { LiveApi.upload(url, token, person.id, name, mime, bytes, key) }
                         },
@@ -327,6 +328,7 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
 @Composable
 private fun IdEvidenceCard(
     record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context,
+    onExternalEvidenceActivity: (Boolean) -> Unit,
     onUpload: (String, String, ByteArray, String) -> Unit, onCheck: (JSONObject) -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -339,6 +341,7 @@ private fun IdEvidenceCard(
         onUpload("ID evidence " + next, mime, bytes, "id_document_" + next)
     }
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        onExternalEvidenceActivity(false)
         if (uri != null) {
             scope.launch {
                 try {
@@ -369,6 +372,7 @@ private fun IdEvidenceCard(
     }
     var cameraFile by remember { mutableStateOf<File?>(null) }
     val fullCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        onExternalEvidenceActivity(false)
         val file = cameraFile
         cameraFile = null
         if (file != null) {
@@ -403,10 +407,12 @@ private fun IdEvidenceCard(
             val file = File.createTempFile("evidence_", ".jpg", directory)
             cameraFile = file
             val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+            onExternalEvidenceActivity(true)
             fullCamera.launch(uri)
         } catch (e: Exception) {
             cameraFile?.delete()
             cameraFile = null
+            onExternalEvidenceActivity(false)
             uploadError = e.message ?: "Camera could not open."
         }
     }
@@ -426,7 +432,15 @@ private fun IdEvidenceCard(
                     captureFullResolution()
                 else cameraPermission.launch(Manifest.permission.CAMERA)
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
-            OutlinedButton(onClick = { photoPicker.launch(arrayOf("image/*", "application/pdf")) },
+            OutlinedButton(onClick = {
+                try {
+                    onExternalEvidenceActivity(true)
+                    photoPicker.launch(arrayOf("image/*", "application/pdf"))
+                } catch (e: Exception) {
+                    onExternalEvidenceActivity(false)
+                    uploadError = e.message ?: "File picker could not open."
+                }
+            },
                 enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Choose photo or file") }
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))

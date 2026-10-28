@@ -1,6 +1,7 @@
 package uk.co.skills4all.adultsafe.ui
 
 import android.Manifest
+import android.app.DatePickerDialog
 import androidx.core.content.FileProvider
 import java.io.File
 import android.content.ClipData
@@ -309,13 +310,32 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
     fun validDate(value: String): Boolean = value.isBlank() ||
         runCatching { LocalDate.parse(value, ukDateFormat); true }.getOrDefault(false)
     val allDatesValid = listOf(requested, submitted, result, expiry).all(::validDate)
+    val datePickerContext = LocalContext.current
+    fun pickDate(current: String, setDate: (String) -> Unit) {
+        val initial = runCatching { LocalDate.parse(current, ukDateFormat) }.getOrDefault(LocalDate.now())
+        DatePickerDialog(datePickerContext, { _, year, month, day ->
+            setDate(LocalDate.of(year, month + 1, day).format(ukDateFormat))
+        }, initial.year, initial.monthValue - 1, initial.dayOfMonth).show()
+    }
     AppCard {
         SectionTitle("DBS record", "Use DD/MM/YYYY dates; leave expiry blank to use site defaults after a result.")
         Text("Current status: " + record.optString("status").replace("_", " "), color = AdultSafeMuted)
-        OutlinedTextField(requested, { requested = it }, label = { Text("DBS requested") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(submitted, { submitted = it }, label = { Text("Submitted date") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(result, { result = it }, label = { Text("Result received") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(expiry, { expiry = it }, label = { Text("Expiry date") }, modifier = Modifier.fillMaxWidth())
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            OutlinedTextField(requested, { requested = it }, label = { Text("DBS requested") }, modifier = Modifier.weight(1f), singleLine = true, enabled = canEdit)
+            TextButton(onClick = { pickDate(requested) { requested = it } }, enabled = canEdit) { Text("Calendar") }
+        }
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            OutlinedTextField(submitted, { submitted = it }, label = { Text("Submitted date") }, modifier = Modifier.weight(1f), singleLine = true, enabled = canEdit)
+            TextButton(onClick = { pickDate(submitted) { submitted = it } }, enabled = canEdit) { Text("Calendar") }
+        }
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            OutlinedTextField(result, { result = it }, label = { Text("Result received") }, modifier = Modifier.weight(1f), singleLine = true, enabled = canEdit)
+            TextButton(onClick = { pickDate(result) { result = it } }, enabled = canEdit) { Text("Calendar") }
+        }
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            OutlinedTextField(expiry, { expiry = it }, label = { Text("Expiry date") }, modifier = Modifier.weight(1f), singleLine = true, enabled = canEdit)
+            TextButton(onClick = { pickDate(expiry) { expiry = it } }, enabled = canEdit) { Text("Calendar") }
+        }
         if (!allDatesValid) Text("Enter dates as real calendar dates in DD/MM/YYYY format.", color = MaterialTheme.colorScheme.error)
         Spacer(Modifier.height(12.dp))
         Button(onClick = {

@@ -40,6 +40,7 @@ import androidx.compose.material3.*
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -71,6 +72,7 @@ fun AdultSafeRoot() {
     var mode by remember { mutableStateOf(if (restored == null) AppMode.Disconnected else AppMode.Locked) }
     var tab by remember { mutableStateOf(Tab.Home) }
     var selected by remember { mutableStateOf<LivePerson?>(null) }
+    val personStateHolder = rememberSaveableStateHolder()
     var filter by remember { mutableStateOf("") }
     var data by remember { mutableStateOf<LiveHome?>(null) }
     var filtered by remember { mutableStateOf<List<LivePerson>?>(null) }
@@ -364,8 +366,10 @@ fun AdultSafeRoot() {
                     awaitPointerEventScope { while (true) { awaitPointerEvent(); touch() } }
                 }) {
                     if (selected != null && session != null && !isDemo) {
-                        LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
-                            onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it; touch() })
+                        personStateHolder.SaveableStateProvider(selected!!.id) {
+                            LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
+                                onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it; touch() })
+                        }
                     } else if (selected != null && isDemo) {
                         Column(Modifier.padding(20.dp)) {
                             TextButton(onClick = { selected = null }) { Text("← Back") }

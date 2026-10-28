@@ -173,7 +173,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 item {
                     val record = idCheck
                     if (person.personType == "volunteer" && record != null) IdEvidenceCard(
-                        record, evidence, busy, canId, canIdCheck, context, onExternalEvidenceActivity,
+                        record, evidence, busy, canId, canIdCheck, context, session, onExternalEvidenceActivity,
                         onUpload = { name, mime, bytes, key ->
                             update { LiveApi.upload(url, token, person.id, name, mime, bytes, key) }
                         },
@@ -348,7 +348,7 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
 
 @Composable
 private fun IdEvidenceCard(
-    record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context,
+    record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context, session: AppSession,
     onExternalEvidenceActivity: (Boolean) -> Unit,
     onUpload: (String, String, ByteArray, String) -> Unit, onCheck: (JSONObject) -> Unit
 ) {

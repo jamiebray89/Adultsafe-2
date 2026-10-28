@@ -489,7 +489,7 @@ private fun IdEvidenceCard(
                 "birth certificate" -> "Birth certificate"
                 "marriage certificate" -> "Marriage certificate"
                 "other id" -> "Other ID"
-                else -> if (key.isBlank() || key == "0") e.name.substringBeforeLast(".").takeIf { it.isNotBlank() && it != "0" } ?: "ID document" else key
+                else -> if (key.isBlank() || key == "0") "Unclassified ID evidence" else key
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {

@@ -80,7 +80,7 @@ object LiveApi {
                 con.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
             }
             try { return response(con) } catch (e: AdultSafeConnectionException) {
-                throw AdultSafeConnectionException("API " + path + ": " + (e.message ?: "Request failed"))
+                throw AdultSafeConnectionException("API " + path.replace(Regex("/people/[^/]+"), "/people/{id}") + ": " + (e.message ?: "Request failed"))
             }
         } finally { con.disconnect() }
     }

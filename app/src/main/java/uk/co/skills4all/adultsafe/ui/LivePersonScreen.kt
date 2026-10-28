@@ -1,6 +1,5 @@
 package uk.co.skills4all.adultsafe.ui
 
-import android.Manifest
 import android.content.Intent
 import android.app.DatePickerDialog
 import androidx.core.content.FileProvider
@@ -8,7 +7,6 @@ import java.io.File
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -33,7 +31,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -356,7 +353,7 @@ private fun IdEvidenceCard(
     var checker by remember(record.toString()) { mutableStateOf(record.optString("checker_name")) }
     var membership by remember(record.toString()) { mutableStateOf(record.optString("checker_membership_number")) }
     var uploadError by remember { mutableStateOf<String?>(null) }
-    val evidenceTypes = listOf("Passport", "Driving Licence", "Birth Certificate", "Other ID")
+    val evidenceTypes = listOf("Passport", "Driving Licence", "Birth Certificate", "Marriage Certificate", "Other ID")
     var chosenType by remember { mutableStateOf("Passport") }
     var typeMenuExpanded by remember { mutableStateOf(false) }
     fun handleBytes(mime: String, bytes: ByteArray) {
@@ -426,11 +423,12 @@ private fun IdEvidenceCard(
             }
         }
     }
-    var cameraFile by remember { mutableStateOf<File?>(null) }
+    // Save the pending path across activity recreation while the external camera is open.
+    var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     val fullCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         onExternalEvidenceActivity(false)
-        val file = cameraFile
-        cameraFile = null
+        val file = cameraPath?.let(::File)
+        cameraPath = null
         if (file != null) {
             scope.launch {
                 try {
@@ -461,32 +459,36 @@ private fun IdEvidenceCard(
         try {
             val directory = File(context.cacheDir, "adultsafe_capture").apply { mkdirs() }
             val file = File.createTempFile("evidence_", ".jpg", directory)
-            cameraFile = file
+            cameraPath = file.absolutePath
             val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
             onExternalEvidenceActivity(true)
             fullCamera.launch(uri)
         } catch (e: Exception) {
-            cameraFile?.delete()
-            cameraFile = null
+            cameraPath?.let { File(it).delete() }
+            cameraPath = null
             onExternalEvidenceActivity(false)
             uploadError = e.message ?: "Camera could not open."
         }
-    }
-    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) captureFullResolution() else uploadError = "Camera permission is needed to take an ID photo."
     }
 
     AppCard {
         SectionTitle("ID evidence", "ID photos upload directly to the site's private evidence store.")
         Text(evidence.size.toString() + " uploaded · minimum " + record.optInt("minimum_evidence", 3), color = AdultSafeMuted)
-        evidence.forEachIndexed { index, e ->
-            val label = e.name.ifBlank { e.documentKey }.replace('_', ' ').trim().ifBlank { "ID document" }
+        evidence.forEach { e ->
+            val key = e.documentKey.replace('_', ' ').trim()
+            val label = when (key.lowercase()) {
+                "passport" -> "Passport"
+                "driving licence", "driving license" -> "Driving licence"
+                "birth certificate" -> "Birth certificate"
+                "marriage certificate" -> "Marriage certificate"
+                "other id" -> "Other ID"
+                else -> key.ifBlank { "ID document" }
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Text("${index + 1}.", color = AdultSafeMuted)
                 Text(label, modifier = Modifier.weight(1f))
                 OutlinedButton(onClick = { viewStoredEvidence(e) },
-                    enabled = !viewingEvidence && e.id.isNotBlank()) { Text("View " + label) }
+                    enabled = !viewingEvidence && e.id.isNotBlank()) { Text("View") }
             }
         }
         if (evidence.isNotEmpty()) Text(
@@ -508,9 +510,8 @@ private fun IdEvidenceCard(
                 }
             }
             Button(onClick = {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
-                    captureFullResolution()
-                else cameraPermission.launch(Manifest.permission.CAMERA)
+                // External camera apps do not require our app to hold CAMERA permission.
+                captureFullResolution()
             }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
             OutlinedButton(onClick = {
                 try {

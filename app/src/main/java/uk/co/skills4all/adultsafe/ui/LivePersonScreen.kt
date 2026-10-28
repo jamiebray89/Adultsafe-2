@@ -306,10 +306,10 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
         runCatching { LocalDate.parse(value).format(ukDateFormat) }.getOrDefault(value)
     fun apiDate(value: String): String = if (value.isBlank()) "" else
         LocalDate.parse(value, ukDateFormat).toString()
-    var requested by remember(record.toString()) { mutableStateOf(displayDate(record.optString("requested_date"))) }
-    var submitted by remember(record.toString()) { mutableStateOf(displayDate(record.optString("submitted_date"))) }
-    var result by remember(record.toString()) { mutableStateOf(displayDate(record.optString("result_received_date"))) }
-    var expiry by remember(record.toString()) { mutableStateOf(displayDate(record.optString("expiry_date"))) }
+    var requested by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("requested_date"))) }
+    var submitted by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("submitted_date"))) }
+    var result by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("result_received_date"))) }
+    var expiry by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("expiry_date"))) }
     val datePickerContext = LocalContext.current
     fun pickDate(current: String, setDate: (String) -> Unit) {
         val initial = runCatching { LocalDate.parse(current, ukDateFormat) }.getOrDefault(LocalDate.now())

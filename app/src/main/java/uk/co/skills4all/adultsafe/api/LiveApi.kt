@@ -154,6 +154,40 @@ object LiveApi {
             LiveEvidence(it.optString("id"), it.optString("original_name"), it.optString("document_key"))
         }
     }
+    suspend fun viewEvidence(base: String, token: String, evidenceId: String): Pair<String, ByteArray> = withContext(Dispatchers.IO) {
+        require(evidenceId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "Invalid evidence identifier." }
+        val con = open(base + ROOT + "/id-evidence/" + evidenceId + "/view", token, "GET")
+        try {
+            val status = con.responseCode
+            if (status !in 200..299) {
+                throw AdultSafeConnectionException(when (status) {
+                    401, 403 -> "You do not have permission to view this ID evidence."
+                    404 -> "The stored evidence could not be found."
+                    else -> "Evidence viewing failed (HTTP " + status + ")."
+                })
+            }
+            val mime = con.contentType?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+            require(mime in setOf("image/jpeg", "image/png", "image/webp", "application/pdf")) {
+                "The server returned an unsupported evidence file type."
+            }
+            val bytes = con.inputStream.use { input ->
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    if (out.size() + n > 15 * 1024 * 1024) {
+                        throw AdultSafeConnectionException("Evidence file exceeds the 15 MB viewer limit.")
+                    }
+                    out.write(buffer, 0, n)
+                }
+                out.toByteArray()
+            }
+            require(bytes.isNotEmpty()) { "The server returned an empty evidence file." }
+            Pair(mime, bytes)
+        } finally { con.disconnect() }
+    }
+
     suspend fun documents(base: String, token: String, id: String): List<LiveDocument> = withContext(Dispatchers.IO) {
         val obj = request(base, token, "/people/" + id + "/documents")
         val states = obj.optJSONObject("states") ?: JSONObject()

@@ -26,7 +26,7 @@ data class LivePerson(
 data class LiveTile(val key: String, val title: String, val count: Int, val filter: String)
 data class LiveAlert(val title: String, val message: String, val severity: String, val personId: String)
 data class LiveHome(val people: List<LivePerson>, val tiles: List<LiveTile>, val alerts: List<LiveAlert>,
-    val documentPersonIds: Set<String>)
+    val documentPersonIds: Set<String>, val unavailableSections: List<String> = emptyList())
 data class LiveEvidence(val id: String, val name: String, val documentKey: String)
 data class LiveDevice(val id: String, val name: String, val lastUsed: String, val revoked: Boolean)
 data class LiveDocument(val key: String, val label: String, val state: String)
@@ -100,26 +100,30 @@ object LiveApi {
     )
 
     suspend fun load(base: String, token: String, allowDemoRecords: Boolean = false): LiveHome = withContext(Dispatchers.IO) {
-        val peopleResponse = request(base, token, "/people")
-        val peopleArray = peopleResponse.optJSONArray("people")
-            ?: throw AdultSafeConnectionException("The WordPress people response is missing its records list.")
-        val p = peopleArray.objects().map(::person).filter { allowDemoRecords || !it.demo }
-        val d = request(base, token, "/dashboard")
-        val tileArray = d.optJSONArray("tiles")
-            ?: throw AdultSafeConnectionException("The WordPress dashboard response is missing its tiles.")
-        val tiles = tileArray.objects().map {
-            LiveTile(it.optString("key"), it.optString("label"), it.optInt("count"), it.optString("filter"))
-        }.filter { it.count > 0 }
-        val alertsJson = request(base, token, "/alerts")
-        val alertsData = alertsJson.optJSONArray("items")
-            ?: throw AdultSafeConnectionException("The WordPress alerts response is missing its items list.")
-        val alerts = alertsData.objects().map {
-            LiveAlert(it.optString("title"), it.optString("message"), it.optString("severity"), it.optString("person_id"))
+        val unavailable = mutableListOf<String>()
+        fun optional(path: String, label: String): JSONObject? = try {
+            request(base, token, path)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            unavailable.add(label + " (" + (e.message ?: "unavailable") + ")")
+            null
         }
-        val docJson = request(base, token, "/workspaces/default/document-acknowledgements")
-        val docRows = docJson.optJSONArray("rows")
-            ?: throw AdultSafeConnectionException("The document response is missing its records list.")
-        val awaitingDocuments = docRows.objects().filter { row ->
+        val peopleResponse = optional("/people", "People")
+        val p = peopleResponse?.optJSONArray("people")?.objects()?.map(::person)
+            ?.filter { allowDemoRecords || !it.demo }.orEmpty()
+        if (peopleResponse != null && !peopleResponse.has("people")) unavailable.add("People (invalid response)")
+        val dashboard = optional("/dashboard", "Dashboard")
+        val tiles = dashboard?.optJSONArray("tiles")?.objects()?.map {
+            LiveTile(it.optString("key"), it.optString("label"), it.optInt("count"), it.optString("filter"))
+        }?.filter { it.count > 0 }.orEmpty()
+        if (dashboard != null && !dashboard.has("tiles")) unavailable.add("Dashboard (invalid response)")
+        val alertsJson = optional("/alerts", "Alerts")
+        val alerts = alertsJson?.optJSONArray("items")?.objects()?.map {
+            LiveAlert(it.optString("title"), it.optString("message"), it.optString("severity"), it.optString("person_id"))
+        }.orEmpty()
+        if (alertsJson != null && !alertsJson.has("items")) unavailable.add("Alerts (invalid response)")
+        val docJson = optional("/workspaces/default/document-acknowledgements", "Documents")
+        val awaitingDocuments = docJson?.optJSONArray("rows")?.objects()?.filter { row ->
             val states = row.optJSONObject("documents") ?: JSONObject()
             val keys = states.keys()
             var pending = false
@@ -128,8 +132,10 @@ object LiveApi {
                 if (state == "required" || state == "followup" || state == "signing_pending") pending = true
             }
             pending
-        }.map { it.optString("person_id") }.toSet()
-        LiveHome(p, tiles, alerts, awaitingDocuments)
+        }?.map { it.optString("person_id") }?.toSet().orEmpty()
+        if (docJson != null && !docJson.has("rows")) unavailable.add("Documents (invalid response)")
+        if (unavailable.size == 4) throw AdultSafeConnectionException("All AdultSafe home sections are unavailable. Please retry.")
+        LiveHome(p, tiles, alerts, awaitingDocuments, unavailable)
     }
 
     suspend fun filteredPeople(base: String, token: String, filter: String): List<LivePerson> = withContext(Dispatchers.IO) {

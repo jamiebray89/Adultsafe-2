@@ -6,6 +6,7 @@ import android.content.Context
 import android.app.Activity
 import android.os.Build
 import android.os.SystemClock
+import kotlinx.coroutines.delay
 import android.widget.Toast
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -76,6 +77,17 @@ fun AdultSafeRoot() {
     var signingOut by remember { mutableStateOf(false) }
     var confirmExit by remember { mutableStateOf(false) }
     var externalEvidenceActivity by remember { mutableStateOf(false) }
+    var lastInteraction by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    var secondsRemaining by remember { mutableIntStateOf(300) }
+    fun touch() { lastInteraction = SystemClock.elapsedRealtime(); secondsRemaining = 300 }
+    LaunchedEffect(mode, externalEvidenceActivity) {
+        while (mode == AppMode.ConnectedLive && !externalEvidenceActivity) {
+            val elapsed = (SystemClock.elapsedRealtime() - lastInteraction) / 1000
+            secondsRemaining = (300 - elapsed.toInt()).coerceAtLeast(0)
+            if (secondsRemaining == 0) { mode = AppMode.Locked; break }
+            delay(1000)
+        }
+    }
 
     fun validateUnlockedSession() {
         val active = session ?: return
@@ -129,7 +141,7 @@ fun AdultSafeRoot() {
                     stoppedAt = SystemClock.elapsedRealtime()
                 } else if (event == Lifecycle.Event.ON_START && stoppedAt > 0L) {
                     if (mode == AppMode.ConnectedLive && !externalEvidenceActivity &&
-                        SystemClock.elapsedRealtime() - stoppedAt >= 30000L) {
+                        SystemClock.elapsedRealtime() - stoppedAt >= 300000L) {
                         mode = AppMode.Locked
                     }
                     stoppedAt = 0L
@@ -242,8 +254,10 @@ fun AdultSafeRoot() {
     }
     if (confirmExit) {
         AlertDialog(
+            containerColor = Color.White,
+            shape = RoundedCornerShape(20.dp),
             onDismissRequest = { confirmExit = false },
-            title = { Text("Exit AdultSafe?") },
+            title = { Text("Exit AdultSafe?", color = AdultSafeNavy, fontWeight = FontWeight.Bold) },
             text = { Text("Close the app? Your sign-in will be kept for next time.") },
             confirmButton = { TextButton(onClick = {
                 confirmExit = false
@@ -308,7 +322,8 @@ fun AdultSafeRoot() {
                                 Text(displayTitle + if (isDemo) " · Demo" else "", maxLines = 1,
                                     overflow = TextOverflow.Ellipsis, color = AdultSafeMuted, fontSize = 12.sp)
                             }
-                            IconButton(onClick = { refresh++ }, enabled = !isDemo && !loading) {
+                            if (!isDemo && secondsRemaining < 270) Text("${secondsRemaining / 60}:${(secondsRemaining % 60).toString().padStart(2, '0')}", fontSize = 11.sp, color = AdultSafeMuted)
+                            IconButton(onClick = { touch(); refresh++ }, enabled = !isDemo && !loading) {
                                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh live records", tint = AdultSafeNavy)
                             }
                         }
@@ -325,7 +340,7 @@ fun AdultSafeRoot() {
                                 Tab.Settings -> Icons.Outlined.Settings
                             }
                             NavigationBarItem(
-                                selected = tab == item, onClick = { selected = null; tab = item; if (item != Tab.People) filter = "" },
+                                selected = tab == item, onClick = { touch(); selected = null; tab = item; if (item != Tab.People) filter = "" },
                                 icon = { Icon(icon, contentDescription = null) },
                                 label = { Text(item.label, maxLines = 1, fontSize = 11.sp) },
                                 alwaysShowLabel = true
@@ -337,7 +352,7 @@ fun AdultSafeRoot() {
                 Box(Modifier.padding(padding).fillMaxSize()) {
                     if (selected != null && session != null && !isDemo) {
                         LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
-                            onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it })
+                            onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it; touch() })
                     } else if (selected != null && isDemo) {
                         Column(Modifier.padding(20.dp)) {
                             TextButton(onClick = { selected = null }) { Text("← Back") }

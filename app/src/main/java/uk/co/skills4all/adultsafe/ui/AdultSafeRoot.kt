@@ -83,9 +83,10 @@ fun AdultSafeRoot() {
     var externalEvidenceActivity by remember { mutableStateOf(false) }
     var lastInteraction by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
     var secondsRemaining by remember { mutableIntStateOf(300) }
+    var inForeground by remember { mutableStateOf(true) }
     fun touch() { lastInteraction = SystemClock.elapsedRealtime(); secondsRemaining = 300 }
-    LaunchedEffect(mode, externalEvidenceActivity) {
-        while (mode == AppMode.ConnectedLive && !externalEvidenceActivity) {
+    LaunchedEffect(mode, externalEvidenceActivity, inForeground) {
+        while (mode == AppMode.ConnectedLive && inForeground && !externalEvidenceActivity) {
             val elapsed = (SystemClock.elapsedRealtime() - lastInteraction) / 1000
             secondsRemaining = (300 - elapsed.toInt()).coerceAtLeast(0)
             if (secondsRemaining == 0) { mode = AppMode.Locked; break }
@@ -110,6 +111,7 @@ fun AdultSafeRoot() {
                 SessionStore.save(context, updated)
                 session = updated
                 savedSites = SessionStore.saved(context)
+                touch()
                 mode = AppMode.ConnectedLive
             } catch (e: Exception) {
                 error = e.message ?: "Unable to verify your saved sign-in."
@@ -141,12 +143,16 @@ fun AdultSafeRoot() {
         if (activity == null) onDispose { }
         else {
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_STOP && mode == AppMode.ConnectedLive) {
-                    stoppedAt = SystemClock.elapsedRealtime()
-                } else if (event == Lifecycle.Event.ON_START && stoppedAt > 0L) {
+                if (event == Lifecycle.Event.ON_STOP) {
+                    inForeground = false
+                    if (mode == AppMode.ConnectedLive) stoppedAt = SystemClock.elapsedRealtime()
+                } else if (event == Lifecycle.Event.ON_START) {
+                    inForeground = true
                     if (mode == AppMode.ConnectedLive && !externalEvidenceActivity &&
-                        SystemClock.elapsedRealtime() - stoppedAt >= 300000L) {
+                        SystemClock.elapsedRealtime() - lastInteraction >= 300000L) {
                         mode = AppMode.Locked
+                    } else if (mode == AppMode.ConnectedLive && externalEvidenceActivity) {
+                        touch()
                     }
                     stoppedAt = 0L
                 }
@@ -287,6 +293,7 @@ fun AdultSafeRoot() {
                 selected = null
                 tab = Tab.Home
                 filter = ""
+                touch()
                 mode = AppMode.ConnectedLive
             }
         )

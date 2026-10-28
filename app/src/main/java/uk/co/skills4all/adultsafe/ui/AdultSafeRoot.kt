@@ -353,6 +353,17 @@ fun AdultSafeRoot() {
                                     TextButton(onClick = { refresh++ }) { Text("Retry") }
                                 }
                             }
+                            if (!isDemo && !data?.unavailableSections.isNullOrEmpty()) {
+                                Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text("Some live sections are temporarily unavailable", fontWeight = FontWeight.Bold)
+                                        data?.unavailableSections?.forEach { section ->
+                                            Text(section, color = AdultSafeMuted, fontSize = 12.sp)
+                                        }
+                                        TextButton(onClick = { refresh++ }) { Text("Retry unavailable sections") }
+                                    }
+                                }
+                            }
                             when (tab) {
                                 Tab.Home -> {
                                     val tiles = if (isDemo) DemoRepository.dashboardTiles().map { LiveTile(it.slug, it.title, it.count, it.slug) }

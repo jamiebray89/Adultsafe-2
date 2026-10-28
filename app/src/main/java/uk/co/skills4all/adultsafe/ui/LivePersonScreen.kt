@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -55,7 +56,8 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     val context = LocalContext.current
     val url = session.site.url
     val token = session.token
-    var page by remember(person.id) { mutableStateOf("Details") }
+    var page by rememberSaveable(person.id) { mutableStateOf("Details") }
+    val personListState = rememberLazyListState()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -137,7 +139,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         )
     }
 
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    LazyColumn(state = personListState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { TextButton(onClick = onBack) { Text("← Back to people") } }
         item { Text(person.name, fontSize = 24.sp, color = uk.co.skills4all.adultsafe.ui.theme.AdultSafeNavy) }
         item { Text(person.personType.replaceFirstChar { it.uppercase() } + " · " + person.role, color = AdultSafeMuted) }
@@ -359,7 +361,7 @@ private fun IdEvidenceCard(
     var membership by remember(record.toString()) { mutableStateOf(record.optString("checker_membership_number")) }
     var uploadError by remember { mutableStateOf<String?>(null) }
     val evidenceTypes = listOf("Passport", "Driving Licence", "Birth Certificate", "Marriage Certificate", "Other ID")
-    var chosenType by remember { mutableStateOf("Passport") }
+    var chosenType by rememberSaveable { mutableStateOf("Passport") }
     var typeMenuExpanded by remember { mutableStateOf(false) }
     fun handleBytes(mime: String, bytes: ByteArray) {
         if (bytes.isEmpty() || bytes.size > 15*1024*1024) { uploadError = "Please select a file up to 15 MB."; return }
@@ -390,7 +392,7 @@ private fun IdEvidenceCard(
                     setDataAndType(uri, mime)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                context.startActivity(Intent.createChooser(intent, "View stored ID evidence"))
+                context.startActivity(intent)
             } catch (e: Exception) {
                 uploadError = e.message ?: "Could not open stored evidence."
             } finally {

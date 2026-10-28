@@ -12,8 +12,8 @@ android {
         applicationId = "uk.co.skills4all.adultsafe"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.4-beta"
+        versionCode = 7
+        versionName = "0.2.5-beta"
     }
 
     signingConfigs {
@@ -67,6 +67,7 @@ android {
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.fragment:fragment-ktx:1.8.5")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended:1.7.6")
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")

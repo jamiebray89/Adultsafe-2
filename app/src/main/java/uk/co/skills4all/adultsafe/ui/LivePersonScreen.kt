@@ -43,6 +43,8 @@ import uk.co.skills4all.adultsafe.ui.components.SectionTitle
 import uk.co.skills4all.adultsafe.ui.theme.AdultSafeMuted
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.ResolverStyle
 
 @Composable
 fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit, onChanged: () -> Unit) {
@@ -294,25 +296,30 @@ private fun PersonEditCard(
 
 @Composable
 private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onSave: (JSONObject) -> Unit) {
-    var requested by remember(record.toString()) { mutableStateOf(record.optString("requested_date")) }
-    var submitted by remember(record.toString()) { mutableStateOf(record.optString("submitted_date")) }
-    var result by remember(record.toString()) { mutableStateOf(record.optString("result_received_date")) }
-    var expiry by remember(record.toString()) { mutableStateOf(record.optString("expiry_date")) }
+    val ukDateFormat = remember { DateTimeFormatter.ofPattern("dd/MM/uuuu").withResolverStyle(ResolverStyle.STRICT) }
+    fun displayDate(value: String): String = if (value.isBlank()) "" else
+        runCatching { LocalDate.parse(value).format(ukDateFormat) }.getOrDefault(value)
+    fun apiDate(value: String): String = if (value.isBlank()) "" else
+        LocalDate.parse(value, ukDateFormat).toString()
+    var requested by remember(record.toString()) { mutableStateOf(displayDate(record.optString("requested_date"))) }
+    var submitted by remember(record.toString()) { mutableStateOf(displayDate(record.optString("submitted_date"))) }
+    var result by remember(record.toString()) { mutableStateOf(displayDate(record.optString("result_received_date"))) }
+    var expiry by remember(record.toString()) { mutableStateOf(displayDate(record.optString("expiry_date"))) }
     fun validDate(value: String): Boolean = value.isBlank() ||
-        runCatching { LocalDate.parse(value); true }.getOrDefault(false)
+        runCatching { LocalDate.parse(value, ukDateFormat); true }.getOrDefault(false)
     val allDatesValid = listOf(requested, submitted, result, expiry).all(::validDate)
     AppCard {
-        SectionTitle("DBS record", "Use YYYY-MM-DD dates; leave expiry blank to use site defaults after a result.")
+        SectionTitle("DBS record", "Use DD/MM/YYYY dates; leave expiry blank to use site defaults after a result.")
         Text("Current status: " + record.optString("status").replace("_", " "), color = AdultSafeMuted)
         OutlinedTextField(requested, { requested = it }, label = { Text("DBS requested") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(submitted, { submitted = it }, label = { Text("Submitted date") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(result, { result = it }, label = { Text("Result received") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(expiry, { expiry = it }, label = { Text("Expiry date") }, modifier = Modifier.fillMaxWidth())
-        if (!allDatesValid) Text("Enter dates as real calendar dates in YYYY-MM-DD format.", color = MaterialTheme.colorScheme.error)
+        if (!allDatesValid) Text("Enter dates as real calendar dates in DD/MM/YYYY format.", color = MaterialTheme.colorScheme.error)
         Spacer(Modifier.height(12.dp))
         Button(onClick = {
-            onSave(JSONObject().put("requested_date", requested).put("submitted_date", submitted)
-                .put("result_received_date", result).put("expiry_date", expiry))
+            onSave(JSONObject().put("requested_date", apiDate(requested)).put("submitted_date", apiDate(submitted))
+                .put("result_received_date", apiDate(result)).put("expiry_date", apiDate(expiry)))
         }, enabled = !busy && canEdit && allDatesValid, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
     }
 }

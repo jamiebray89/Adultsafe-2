@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - dev/android-person-missing-fields-20261028
+      - dev/android-consolidated-20261028
 
 jobs:
   build:

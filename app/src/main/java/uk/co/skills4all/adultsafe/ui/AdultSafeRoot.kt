@@ -19,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -349,7 +350,9 @@ fun AdultSafeRoot() {
                     }
                 }
             ) { padding ->
-                Box(Modifier.padding(padding).fillMaxSize()) {
+                Box(Modifier.padding(padding).fillMaxSize().pointerInput(Unit) {
+                    awaitPointerEventScope { while (true) { awaitPointerEvent(); touch() } }
+                }) {
                     if (selected != null && session != null && !isDemo) {
                         LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
                             onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it; touch() })

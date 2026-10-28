@@ -18,6 +18,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
@@ -504,17 +507,64 @@ private fun LivePeopleList(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, ready: Boolean, onPerson: (LivePerson) -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("adultsafe_alert_dismissals", Context.MODE_PRIVATE) }
+    var dismissed by remember { mutableStateOf(prefs.getStringSet("dismissed", emptySet())!!.toSet()) }
+    var showHistory by remember { mutableStateOf(false) }
+    var lastDismissed by remember { mutableStateOf<String?>(null) }
+    fun key(a: LiveAlert): String = (a.personId + "|" + a.title + "|" + a.message).hashCode().toString()
+    fun dismiss(key: String) {
+        dismissed = dismissed + key
+        prefs.edit().putStringSet("dismissed", dismissed).apply()
+        lastDismissed = key
+    }
+    fun undo() {
+        lastDismissed?.let { dismissed = dismissed - it; prefs.edit().putStringSet("dismissed", dismissed).apply() }
+        lastDismissed = null
+    }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text("Alerts", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
-        if (alerts.isEmpty() && ready) item { MessageCard("No alerts", "There are no current alerts for this site.") }
-        items(alerts) { a ->
-            Card(onClick = { people.firstOrNull { it.id == a.personId }?.let(onPerson) },
-                colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(15.dp)) {
-                    Text(a.title, fontWeight = FontWeight.Bold)
-                    Text(a.message, color = AdultSafeMuted)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Alerts", fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showHistory = !showHistory }) { Text(if (showHistory) "Current" else "Dismissed") }
+            }
+        }
+        if (lastDismissed != null) item { TextButton(onClick = { undo() }) { Text("Undo dismissal") } }
+        val visibleAlerts = alerts.filter { (key(it) in dismissed) == showHistory }
+        if (visibleAlerts.isEmpty() && ready) item { MessageCard("No alerts", "There are no alerts in this view.") }
+        items(visibleAlerts, key = { key(it) }) { a ->
+            val k = key(a)
+            val swipe = rememberSwipeToDismissBoxState(confirmValueChange = { value ->
+                if (value != SwipeToDismissBoxValue.Settled) {
+                    if (showHistory) { dismissed = dismissed - k; prefs.edit().putStringSet("dismissed", dismissed).apply() }
+                    else dismiss(k)
+                    false
+                } else true
+            })
+            SwipeToDismissBox(state = swipe, backgroundContent = { Box(Modifier.fillMaxSize().background(AdultSafeBackground)) }) {
+                Card(onClick = { people.firstOrNull { it.id == a.personId }?.let(onPerson) },
+                    colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(a.title, fontWeight = FontWeight.Bold)
+                            Text(a.message, color = AdultSafeMuted)
+                        }
+                        var menu by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { menu = true }) { Text("⋮") }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(text = { Text(if (showHistory) "Restore" else "Dismiss") },
+                                    onClick = {
+                                        menu = false
+                                        if (showHistory) { dismissed = dismissed - k; prefs.edit().putStringSet("dismissed", dismissed).apply() }
+                                        else dismiss(k)
+                                    })
+                            }
+                        }
+                    }
                 }
             }
         }

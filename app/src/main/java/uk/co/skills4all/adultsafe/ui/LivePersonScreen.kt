@@ -227,9 +227,19 @@ private fun PersonEditCard(
     AppCard {
         SectionTitle("Person details", "Details saved on your AdultSafe WordPress site.")
         Spacer(Modifier.height(10.dp))
-        OutlinedTextField(name, { name = it }, label = { Text("Full name") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(email, { email = it }, label = { Text("Email address") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Text("Role", color = AdultSafeMuted)
+        val missingFields = buildList {
+            if (name.isBlank()) add("Full name (required)")
+            if (role.isBlank()) add("Role (required)")
+            if (email.isBlank()) add("Email address (missing)")
+            if (membership.isBlank() && personType == "volunteer") add("Membership number (missing)")
+        }
+        if (missingFields.isNotEmpty()) {
+            Text("⚠ Missing information: " + missingFields.joinToString(", "),
+                color = Color(0xFF986000), fontSize = 13.sp)
+        }
+        OutlinedTextField(name, { name = it }, label = { Text(if (name.isBlank()) "⚠ Full name — required" else "Full name") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(email, { email = it }, label = { Text(if (email.isBlank()) "⚠ Email address — missing" else "Email address") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text(if (role.isBlank()) "⚠ Role — required" else "Role", color = if (role.isBlank()) Color(0xFF986000) else AdultSafeMuted)
         Box {
             OutlinedButton(onClick = { roleMenu = true }, enabled = canEdit && choices != null, modifier = Modifier.fillMaxWidth()) {
                 Text(choices?.optString(role).orEmpty().ifBlank { role.ifBlank { "Select a role" } })
@@ -245,7 +255,7 @@ private fun PersonEditCard(
                 }
             }
         }
-        OutlinedTextField(membership, { membership = it }, label = { Text("Membership number") }, enabled = canEdit, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(membership, { membership = it }, label = { Text(if (membership.isBlank() && personType == "volunteer") "⚠ Membership number — missing" else "Membership number") }, enabled = canEdit, modifier = Modifier.fillMaxWidth())
         Text("Person type", color = AdultSafeMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(personType == "volunteer", onClick = { if (canEdit) personType = "volunteer" }, label = { Text("Volunteer") })

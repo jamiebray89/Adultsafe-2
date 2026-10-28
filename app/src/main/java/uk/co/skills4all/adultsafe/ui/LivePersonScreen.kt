@@ -318,13 +318,13 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
     @Composable
     fun DateRow(label: String, value: String, update: (String) -> Unit) {
         Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-            OutlinedTextField(value, {}, readOnly = true, enabled = false,
-                label = { Text(label) }, modifier = Modifier.weight(1f),
-                singleLine = true, placeholder = { Text("Select date") })
-            if (canEdit) {
-                TextButton(onClick = { pickDate(value, update) }) { Text("Select") }
-                if (value.isNotBlank()) TextButton(onClick = { update("") }) { Text("Clear") }
+            Box(Modifier.weight(1f)) {
+                OutlinedTextField(value, {}, readOnly = true, enabled = false,
+                    label = { Text(label) }, modifier = Modifier.fillMaxWidth(),
+                    singleLine = true, placeholder = { Text("Tap to select date") })
+                if (canEdit) Box(Modifier.matchParentSize().clickable { pickDate(value, update) })
             }
+            if (canEdit && value.isNotBlank()) TextButton(onClick = { update("") }) { Text("Clear") }
         }
     }
     AppCard {
@@ -487,7 +487,7 @@ private fun IdEvidenceCard(
                 "birth certificate" -> "Birth certificate"
                 "marriage certificate" -> "Marriage certificate"
                 "other id" -> "Other ID"
-                else -> if (key.isBlank() || key == "0") "ID document" else key
+                else -> if (key.isBlank() || key == "0") e.name.substringBeforeLast(".").takeIf { it.isNotBlank() && it != "0" } ?: "ID document" else key
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {

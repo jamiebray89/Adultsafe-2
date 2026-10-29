@@ -356,6 +356,7 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onD
     var submitted by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("submitted_date"))) }
     var result by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("result_received_date"))) }
     var expiry by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("expiry_date"))) }
+    var proposedExpiry by remember { mutableStateOf<String?>(null) }
     val draft = remember(requested, submitted, result, expiry) {
         JSONObject().put("requested_date", apiDate(requested)).put("submitted_date", apiDate(submitted))
             .put("result_received_date", apiDate(result)).put("expiry_date", apiDate(expiry))
@@ -387,7 +388,21 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onD
         Text("Current status: " + record.optString("status").replace("_", " "), color = AdultSafeMuted)
         DateRow("DBS requested", requested) { requested = it }
         DateRow("Submitted date", submitted) { submitted = it }
-        DateRow("Result received", result) { result = it }
+        DateRow("Result received", result) { newDate ->
+            result = newDate
+            if (newDate.isNotBlank()) {
+                proposedExpiry = LocalDate.parse(newDate, ukDateFormat).plusYears(5).format(ukDateFormat)
+            }
+        }
+        if (proposedExpiry != null) {
+            AlertDialog(
+                onDismissRequest = { proposedExpiry = null },
+                title = { Text("Confirm DBS expiry") },
+                text = { Text("Use " + proposedExpiry + " as the expiry date (five years after result received)?") },
+                confirmButton = { TextButton(onClick = { expiry = proposedExpiry.orEmpty(); proposedExpiry = null }) { Text("Confirm expiry") } },
+                dismissButton = { TextButton(onClick = { proposedExpiry = null }) { Text("Set manually") } }
+            )
+        }
         if (result.isBlank()) {
             TextButton(onClick = {
                 datePickerContext.startActivity(Intent(Intent.ACTION_VIEW,

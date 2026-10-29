@@ -72,6 +72,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     var dbsDirty by remember { mutableStateOf(false) }
     var dbsDraft by remember { mutableStateOf<JSONObject?>(null) }
     var pendingNavigation by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var confirmRenewal by remember { mutableStateOf(false) }
 
     val canEditPeople = session.permissions.contains("people.write") || session.roles.contains("manager")
     val canEditDbs = session.permissions.contains("dbs.write") || session.roles.any { it == "manager" || it == "dbs_lead" }
@@ -117,6 +118,18 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
 
     fun navigate(action: () -> Unit) {
         if (page == "DBS / ID" && dbsDirty) pendingNavigation = action else action()
+    }
+    if (confirmRenewal) {
+        AlertDialog(
+            onDismissRequest = { confirmRenewal = false },
+            title = { Text("Start new DBS application?") },
+            text = { Text("The previous DBS application will be retained in history. The new application requires a fresh ID check. This cannot be undone.") },
+            confirmButton = { TextButton(enabled = !busy, onClick = {
+                confirmRenewal = false
+                update { LiveApi.startDbsRenewal(url, token, person.id) }
+            }) { Text("Start renewal") } },
+            dismissButton = { TextButton(onClick = { confirmRenewal = false }) { Text("Cancel") } }
+        )
     }
     if (pendingNavigation != null) {
         AlertDialog(
@@ -201,7 +214,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                     val record = dbs
                     if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onDirty = { dirty, draft -> dbsDirty = dirty; dbsDraft = draft }, onSave = { changes ->
                         update(onSuccess = { dbsDirty = false }) { LiveApi.updateDbs(url, token, person.id, changes) }
-                    })
+                    }, onRenewal = { confirmRenewal = true })
                 }
                 item {
                     val record = idCheck
@@ -333,7 +346,7 @@ private fun PersonEditCard(
 }
 
 @Composable
-private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onDirty: (Boolean, JSONObject) -> Unit, onSave: (JSONObject) -> Unit) {
+private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onDirty: (Boolean, JSONObject) -> Unit, onSave: (JSONObject) -> Unit, onRenewal: () -> Unit) {
     val ukDateFormat = remember { DateTimeFormatter.ofPattern("dd/MM/uuuu").withResolverStyle(ResolverStyle.STRICT) }
     fun displayDate(value: String): String = if (value.isBlank()) "" else
         runCatching { LocalDate.parse(value).format(ukDateFormat) }.getOrDefault(value)
@@ -382,6 +395,8 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onD
             }) { Text("Check disclosure status") }
         }
         DateRow("Expiry date", expiry) { expiry = it }
+        if (record.optBoolean("renewal_pending")) Text("Renewal in progress: fresh ID check required.", color = Color(0xFF986000))
+        else if (canEdit && expiry.isNotBlank()) OutlinedButton(onClick = onRenewal, enabled = !busy && !isDirty) { Text("Start DBS renewal") }
         Spacer(Modifier.height(12.dp))
         Button(onClick = {
             onSave(draft)

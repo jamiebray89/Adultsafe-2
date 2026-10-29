@@ -198,14 +198,16 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 )
             }
             "History" -> item { AppCard {
-                SectionTitle("Document history")
+                SectionTitle("Record history", "DBS changes and document handovers")
                 val rows = history
-                if (!canViewHistory) Text("Your account cannot view document history.")
-                else if (rows == null || rows.length() == 0) Text("No recorded document handovers yet.")
+                if (!canViewHistory) Text("Your account cannot view record history.")
+                else if (rows == null || rows.length() == 0) Text("No recorded changes yet.")
                 else (0 until rows.length()).forEach { idx ->
                     val row = rows.optJSONObject(idx) ?: JSONObject()
                     Text(row.optString("event", "Document event").replace("_", " "), color = Color(0xFF123D71))
-                    Text(row.optString("signed_at"), color = AdultSafeMuted)
+                    Text(row.optString("recorded_at").ifBlank { row.optString("signed_at") }, color = AdultSafeMuted)
+                    if (row.has("field")) Text(row.optString("field").replace("_", " ") + ": " + row.optString("old_value").ifBlank { "Not set" } + " → " + row.optString("new_value").ifBlank { "Cleared" }, color = AdultSafeMuted)
+                    if (row.has("user_id")) Text("Recorded by user #" + row.optString("user_id"), color = AdultSafeMuted, fontSize = 12.sp)
                     // Never print signature data or untrusted HTML into the UI.
                     HorizontalDivider()
                 }

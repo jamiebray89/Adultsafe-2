@@ -69,6 +69,9 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     var evidence by remember(person.id) { mutableStateOf<List<LiveEvidence>>(emptyList()) }
     var history by remember(person.id) { mutableStateOf<JSONArray?>(null) }
     var metadata by remember { mutableStateOf<JSONObject?>(null) }
+    var dbsDirty by remember { mutableStateOf(false) }
+    var dbsDraft by remember { mutableStateOf<JSONObject?>(null) }
+    var pendingNavigation by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     val canEditPeople = session.permissions.contains("people.write") || session.roles.contains("manager")
     val canEditDbs = session.permissions.contains("dbs.write") || session.roles.any { it == "manager" || it == "dbs_lead" }
@@ -100,16 +103,44 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         finally { busy = false }
     }
 
-    fun update(task: suspend () -> Unit) {
+    fun update(task: suspend () -> Unit, onSuccess: () -> Unit = {}) {
         if (busy) return
         busy = true
         error = null
         message = null
         scope.launch {
-            try { task(); message = "Changes saved"; reload++; onChanged() }
+            try { task(); message = "Changes saved"; reload++; onChanged(); onSuccess() }
             catch (e: Exception) { error = e.message ?: "Unable to save. No changes were confirmed." }
             finally { busy = false }
         }
+    }
+
+    fun navigate(action: () -> Unit) {
+        if (page == "DBS / ID" && dbsDirty) pendingNavigation = action else action()
+    }
+    if (pendingNavigation != null) {
+        AlertDialog(
+            onDismissRequest = { pendingNavigation = null },
+            title = { Text("Unsaved DBS changes") },
+            text = { Text("Save the changed DBS dates before leaving this record?") },
+            confirmButton = {
+                TextButton(enabled = !busy && dbsDraft != null, onClick = {
+                    val draft = dbsDraft ?: return@TextButton
+                    update({ LiveApi.updateDbs(url, token, person.id, draft) }) {
+                        dbsDirty = false
+                        val next = pendingNavigation
+                        pendingNavigation = null
+                        next?.invoke()
+                    }
+                }) { Text("Save changes") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { dbsDirty = false; pendingNavigation?.invoke(); pendingNavigation = null }) { Text("Discard") }
+                    TextButton(onClick = { pendingNavigation = null }) { Text("Keep editing") }
+                }
+            }
+        )
     }
 
     var showSignature by remember { mutableStateOf(false) }
@@ -140,13 +171,13 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     }
 
     LazyColumn(state = personListState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { TextButton(onClick = onBack) { Text("← Back to people") } }
+        item { TextButton(onClick = { navigate(onBack) }) { Text("← Back to people") } }
         item { Text(person.name, fontSize = 24.sp, color = uk.co.skills4all.adultsafe.ui.theme.AdultSafeNavy) }
         item { Text(person.personType.replaceFirstChar { it.uppercase() } + " · " + person.role, color = AdultSafeMuted) }
         item {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("Details", "DBS / ID", "Documents", "History").forEach { tab ->
-                    FilterChip(selected = page == tab, onClick = { page = tab }, label = { Text(tab) })
+                    FilterChip(selected = page == tab, onClick = { navigate { page = tab } }, label = { Text(tab) })
                 }
             }
         }
@@ -168,8 +199,8 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
             "DBS / ID" -> {
                 item {
                     val record = dbs
-                    if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onSave = { changes ->
-                        update { LiveApi.updateDbs(url, token, person.id, changes) }
+                    if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onDirty = { dirty, draft -> dbsDirty = dirty; dbsDraft = draft }, onSave = { changes ->
+                        update({ LiveApi.updateDbs(url, token, person.id, changes) }) { dbsDirty = false }
                     })
                 }
                 item {
@@ -302,7 +333,7 @@ private fun PersonEditCard(
 }
 
 @Composable
-private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onSave: (JSONObject) -> Unit) {
+private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onDirty: (Boolean, JSONObject) -> Unit, onSave: (JSONObject) -> Unit) {
     val ukDateFormat = remember { DateTimeFormatter.ofPattern("dd/MM/uuuu").withResolverStyle(ResolverStyle.STRICT) }
     fun displayDate(value: String): String = if (value.isBlank()) "" else
         runCatching { LocalDate.parse(value).format(ukDateFormat) }.getOrDefault(value)
@@ -312,6 +343,13 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
     var submitted by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("submitted_date"))) }
     var result by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("result_received_date"))) }
     var expiry by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("expiry_date"))) }
+    val draft = remember(requested, submitted, result, expiry) {
+        JSONObject().put("requested_date", apiDate(requested)).put("submitted_date", apiDate(submitted))
+            .put("result_received_date", apiDate(result)).put("expiry_date", apiDate(expiry))
+    }
+    val isDirty = listOf("requested_date", "submitted_date", "result_received_date", "expiry_date")
+        .any { draft.optString(it) != record.optString(it) }
+    SideEffect { onDirty(isDirty, draft) }
     val datePickerContext = LocalContext.current
     fun pickDate(current: String, setDate: (String) -> Unit) {
         val initial = runCatching { LocalDate.parse(current, ukDateFormat) }.getOrDefault(LocalDate.now())
@@ -346,8 +384,7 @@ private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onS
         DateRow("Expiry date", expiry) { expiry = it }
         Spacer(Modifier.height(12.dp))
         Button(onClick = {
-            onSave(JSONObject().put("requested_date", apiDate(requested)).put("submitted_date", apiDate(submitted))
-                .put("result_received_date", apiDate(result)).put("expiry_date", apiDate(expiry)))
+            onSave(draft)
         }, enabled = !busy && canEdit, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
     }
 }

@@ -609,43 +609,64 @@ private fun DocumentsEditCard(
 ) {
     val selected = remember(documents) { mutableStateListOf<String>() }
     val notRequired = remember(documents) {
-        mutableStateListOf<String>().also { it.addAll(documents.filter { d -> d.state == "not_required" }.map { d -> d.key }) }
+        mutableStateListOf<String>().also { list ->
+            list.addAll(documents.filter { it.state == "not_required" }.map { it.key })
+        }
     }
-    val outstanding = documents.filter { it.state == "required" }
-    val requiredSelection = documents.filter { it.key !in notRequired && it.state != "signed" }.map { it.key }
+    val outstanding = documents.filter { it.state == "required" && it.key !in notRequired }
     AppCard {
-        SectionTitle("Documents", "Select outstanding documents to record a signed handover or request confirmation.")
+        SectionTitle("Documents", "Choose which documents are required, then select outstanding items for handover.")
         if (documents.isEmpty()) Text("No document requirements are configured.", color = AdultSafeMuted)
         documents.forEach { doc ->
-            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                if (doc.key in requiredSelection) {
-                    Checkbox(checked = doc.key in selected, onCheckedChange = { yes ->
-                        if (yes) selected.add(doc.key) else selected.remove(doc.key)
-                    })
+            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                Text(doc.label, fontSize = 17.sp)
+                Text(
+                    if (doc.state == "signed") "Received — signed acknowledgement recorded"
+                    else if (doc.key in notRequired) "Not required"
+                    else "Required — awaiting handover",
+                    color = AdultSafeMuted, fontSize = 12.sp
+                )
+                if (doc.state != "signed" && canRequirements) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        androidx.compose.material3.RadioButton(
+                            selected = doc.key !in notRequired,
+                            onClick = { notRequired.remove(doc.key) }
+                        )
+                        Text("Required", modifier = Modifier.padding(end = 12.dp))
+                        androidx.compose.material3.RadioButton(
+                            selected = doc.key in notRequired,
+                            onClick = { if (doc.key !in notRequired) notRequired.add(doc.key); selected.remove(doc.key) }
+                        )
+                        Text("Not required")
+                    }
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(doc.label)
-                    Text(if (doc.key in notRequired) "Not required" else if (doc.state == "signed") "Acknowledged" else "Required · awaiting handover", color = AdultSafeMuted, fontSize = 12.sp)
-                }
-                if (doc.state != "signed") {
-                    Checkbox(checked = doc.key in notRequired, enabled = canRequirements, onCheckedChange = { yes ->
-                        if (yes) notRequired.add(doc.key) else notRequired.remove(doc.key)
-                    })
-                    Text("Not required", fontSize = 12.sp)
+                if (doc.state == "required" && doc.key !in notRequired) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = doc.key in selected,
+                            onCheckedChange = { yes -> if (yes) selected.add(doc.key) else selected.remove(doc.key) }
+                        )
+                        Text("Select for handover / confirmation")
+                    }
                 }
             }
+            HorizontalDivider()
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = {
-            onRequirements(documents.filter { it.key !in notRequired }.map { it.key }, notRequired.toList())
-        }, enabled = !busy && canRequirements, modifier = Modifier.fillMaxWidth()) { Text("Save requirements") }
-        Button(onClick = { onSign(selected.toList()) }, enabled = !busy && canSign && selected.isNotEmpty(),
-            modifier = Modifier.fillMaxWidth()) { Text("Record documents given & sign") }
-        OutlinedButton(onClick = { onRequest(selected.toList()) }, enabled = !busy && canRequest && selected.isNotEmpty(),
-            modifier = Modifier.fillMaxWidth()) { Text("Create confirmation link") }
+        OutlinedButton(
+            onClick = { onRequirements(documents.filter { it.key !in notRequired }.map { it.key }, notRequired.toList()) },
+            enabled = !busy && canRequirements, modifier = Modifier.fillMaxWidth()
+        ) { Text("Save requirements") }
+        Button(
+            onClick = { onSign(selected.toList()) },
+            enabled = !busy && canSign && selected.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+        ) { Text("Record documents given & sign") }
+        OutlinedButton(
+            onClick = { onRequest(selected.toList()) },
+            enabled = !busy && canRequest && selected.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+        ) { Text("Create confirmation link") }
         if (!canSign) Text("Document recording is not allowed for your account.", color = AdultSafeMuted)
-        if (requiredSelection.isEmpty()) Text("No required documents awaiting handover. Untick Not required and save requirements to enable handover.", color = AdultSafeMuted)
-        else if (selected.isEmpty()) Text("Select a required document using its left checkbox to enable handover or confirmation.", color = AdultSafeMuted)
+        if (outstanding.isEmpty()) Text("No outstanding required documents.", color = AdultSafeMuted)
     }
 }
 

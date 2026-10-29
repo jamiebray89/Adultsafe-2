@@ -429,11 +429,31 @@ private fun IdEvidenceCard(
     var checker by remember(record.toString()) { mutableStateOf(record.optString("checker_name")) }
     var membership by remember(record.toString()) { mutableStateOf(record.optString("checker_membership_number")) }
     var uploadError by remember { mutableStateOf<String?>(null) }
-    val evidenceTypes = listOf("Passport", "Driving Licence", "Birth Certificate", "Marriage Certificate", "Other ID")
-    var chosenType by rememberSaveable { mutableStateOf("Passport") }
+    // Document names are grouped for usability; the server must remain authoritative for DBS eligibility.
+    val evidenceTypes = listOf(
+        "Group 1 — Passport", "Group 1 — Biometric residence permit",
+        "Group 1 — Current photocard driving licence", "Group 1 — Birth certificate (issued within 12 months)",
+        "Group 1 — Adoption certificate", "Group 1 — Immigration document",
+        "Group 2a — Birth certificate (issued after 12 months)",
+        "Group 2a — Marriage certificate", "Group 2a — Civil partnership certificate",
+        "Group 2a — Firearms licence", "Group 2a — HM Forces ID card",
+        "Group 2a — Photocard driving licence (non-UK)",
+        "Group 2b — Bank or building society statement",
+        "Group 2b — Credit card statement", "Group 2b — Utility bill",
+        "Group 2b — Council tax statement", "Group 2b — Mortgage statement",
+        "Group 2b — P45 or P60", "Group 2b — Government benefit letter",
+        "Group 2b — Financial statement", "Group 2b — Work permit or visa",
+        "Group 2b — Letter from head teacher or college principal"
+    )
+    val usedTypes = evidence.map { it.documentKey.lowercase() }.toSet()
+    val availableTypes = evidenceTypes.filter { type ->
+        type.lowercase().replace(" ", "_") !in usedTypes
+    }
+    var chosenType by rememberSaveable { mutableStateOf("") }
     var typeMenuExpanded by remember { mutableStateOf(false) }
     fun handleBytes(mime: String, bytes: ByteArray) {
         if (bytes.isEmpty() || bytes.size > 15*1024*1024) { uploadError = "Please select a file up to 15 MB."; return }
+        if (chosenType.isBlank() || chosenType !in availableTypes) { uploadError = "Choose an unused ID type first."; return }
         val key = chosenType.lowercase().replace(" ", "_")
         onUpload(chosenType, mime, bytes, key)
     }
@@ -575,9 +595,9 @@ private fun IdEvidenceCard(
         if (canId) {
             Spacer(Modifier.height(10.dp))
             Box {
-                OutlinedButton(onClick = { typeMenuExpanded = true }) { Text("ID type: " + chosenType + " ▾") }
+                OutlinedButton(onClick = { typeMenuExpanded = true }) { Text("ID type: " + chosenType.ifBlank { "Select document" } + " ▾") }
                 DropdownMenu(expanded = typeMenuExpanded, onDismissRequest = { typeMenuExpanded = false }) {
-                    evidenceTypes.forEach { type ->
+                    availableTypes.forEach { type ->
                         DropdownMenuItem(text = { Text(type) }, onClick = {
                             chosenType = type
                             typeMenuExpanded = false
@@ -588,7 +608,7 @@ private fun IdEvidenceCard(
             Button(onClick = {
                 // External camera apps do not require our app to hold CAMERA permission.
                 captureFullResolution()
-            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
+            }, enabled = !busy && chosenType in availableTypes, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
             OutlinedButton(onClick = {
                 try {
                     onExternalEvidenceActivity(true)

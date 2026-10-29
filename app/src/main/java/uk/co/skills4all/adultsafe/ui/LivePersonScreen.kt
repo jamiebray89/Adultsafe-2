@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -73,6 +74,8 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     var dbsDraft by remember { mutableStateOf<JSONObject?>(null) }
     var pendingNavigation by remember { mutableStateOf<(() -> Unit)?>(null) }
     var confirmRenewal by remember { mutableStateOf(false) }
+    var acknowledgementDetail by remember { mutableStateOf<JSONObject?>(null) }
+    var acknowledgementLoading by remember { mutableStateOf(false) }
 
     val canEditPeople = session.permissions.contains("people.write") || session.roles.contains("manager")
     val canEditDbs = session.permissions.contains("dbs.write") || session.roles.any { it == "manager" || it == "dbs_lead" }
@@ -242,6 +245,32 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 )
             }
             "History" -> item { AppCard {
+                if (acknowledgementDetail != null) {
+                    val detail = acknowledgementDetail!!
+                    Text("Signed acknowledgement", color = Color(0xFF123D71))
+                    Text("Date: " + detail.optString("signed_at"))
+                    Text("Recorded by user #" + detail.optString("user_id"))
+                    Text("Documents: " + detail.optJSONObject("items")?.let { obj ->
+                        val names = mutableListOf<String>()
+                        val keys = obj.keys()
+                        while (keys.hasNext()) { val key = keys.next(); names.add(obj.optString(key)) }
+                        names.joinToString(", ")
+                    }.orEmpty())
+                    val signature = detail.optString("signature")
+                    if (signature.startsWith("data:image/png;base64,")) {
+                        val bytes = remember(signature) { runCatching { Base64.decode(signature.substringAfter(","), Base64.DEFAULT) }.getOrNull() }
+                        val bitmap = remember(bytes) { bytes?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) } }
+                        if (bitmap != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = bitmap.asImageBitmap(), contentDescription = "Saved handover signature",
+                                modifier = Modifier.fillMaxWidth().height(160.dp)
+                            )
+                        }
+                    }
+                    TextButton(onClick = { acknowledgementDetail = null }) { Text("Close acknowledgement") }
+                    HorizontalDivider()
+                }
+
                 SectionTitle("Record history", "DBS changes and document handovers")
                 val rows = history
                 if (!canViewHistory) Text("Your account cannot view record history.")
@@ -252,6 +281,21 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                     Text(row.optString("recorded_at").ifBlank { row.optString("signed_at") }, color = AdultSafeMuted)
                     if (row.has("field")) Text(row.optString("field").replace("_", " ") + ": " + row.optString("old_value").ifBlank { "Not set" } + " → " + row.optString("new_value").ifBlank { "Cleared" }, color = AdultSafeMuted)
                     if (row.has("user_id")) Text("Recorded by user #" + row.optString("user_id"), color = AdultSafeMuted, fontSize = 12.sp)
+                    if (row.optBoolean("has_signature") && row.has("acknowledgement_index")) {
+                        OutlinedButton(
+                            enabled = !acknowledgementLoading,
+                            onClick = {
+                                acknowledgementLoading = true
+                                scope.launch {
+                                    try {
+                                        acknowledgementDetail = LiveApi.acknowledgement(url, token, person.id, row.optInt("acknowledgement_index"))
+                                    } catch (e: Exception) {
+                                        error = e.message ?: "Could not load signed acknowledgement."
+                                    } finally { acknowledgementLoading = false }
+                                }
+                            }
+                        ) { Text("View signed acknowledgement") }
+                    }
                     // Never print signature data or untrusted HTML into the UI.
                     HorizontalDivider()
                 }

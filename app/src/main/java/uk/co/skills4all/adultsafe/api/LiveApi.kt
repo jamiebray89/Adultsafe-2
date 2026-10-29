@@ -224,6 +224,9 @@ object LiveApi {
     suspend fun createPerson(base: String, token: String, values: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/people", "POST", values)
     }
+    suspend fun startDbsRenewal(base: String, token: String, id: String): JSONObject = withContext(Dispatchers.IO) {
+        request(base, token, "/people/" + id + "/dbs/renewal", "POST", JSONObject())
+    }
     suspend fun updateDbs(base: String, token: String, id: String, values: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/people/" + id + "/dbs", "PUT", values)
     }

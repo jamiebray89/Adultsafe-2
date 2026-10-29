@@ -2,6 +2,10 @@ name: Android debug build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - dev/android-person-missing-fields-20261028
+      - dev/android-consolidated-20261028
 
 jobs:
   build:
@@ -40,11 +44,38 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
-      - name: Build debug APK
-        run: gradle assembleDebug
+      - name: Restore permanent signing key
+        shell: bash
+        env:
+          ADULTSAFE_KEYSTORE_BASE64: ${{ secrets.ADULTSAFE_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ADULTSAFE_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ADULTSAFE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ADULTSAFE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$ADULTSAFE_KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "::error::AdultSafe permanent signing secrets are missing. Refusing to produce a temporary-key APK."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$ADULTSAFE_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/adultsafe-signing.jks"
+          test -s "$RUNNER_TEMP/adultsafe-signing.jks"
+          echo "ADULTSAFE_RELEASE_STORE_FILE=$RUNNER_TEMP/adultsafe-signing.jks" >> "$GITHUB_ENV"
+          echo "ADULTSAFE_RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ADULTSAFE_RELEASE_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ADULTSAFE_RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build permanently signed debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: adultsafe-debug-apk
+          name: adultsafe-permanently-signed-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk

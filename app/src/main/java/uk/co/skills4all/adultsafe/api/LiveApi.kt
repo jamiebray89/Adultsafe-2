@@ -26,7 +26,7 @@ data class LivePerson(
 data class LiveTile(val key: String, val title: String, val count: Int, val filter: String)
 data class LiveAlert(val title: String, val message: String, val severity: String, val personId: String)
 data class LiveHome(val people: List<LivePerson>, val tiles: List<LiveTile>, val alerts: List<LiveAlert>,
-    val documentPersonIds: Set<String>)
+    val documentPersonIds: Set<String>, val unavailableSections: List<String> = emptyList())
 data class LiveEvidence(val id: String, val name: String, val documentKey: String)
 data class LiveDevice(val id: String, val name: String, val lastUsed: String, val revoked: Boolean)
 data class LiveDocument(val key: String, val label: String, val state: String)
@@ -79,7 +79,9 @@ object LiveApi {
                 con.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                 con.outputStream.use { it.write(data.toString().toByteArray(Charsets.UTF_8)) }
             }
-            return response(con)
+            try { return response(con) } catch (e: AdultSafeConnectionException) {
+                throw AdultSafeConnectionException("API " + path.replace(Regex("/people/[^/]+"), "/people/{id}") + ": " + (e.message ?: "Request failed"))
+            }
         } finally { con.disconnect() }
     }
 
@@ -98,26 +100,30 @@ object LiveApi {
     )
 
     suspend fun load(base: String, token: String, allowDemoRecords: Boolean = false): LiveHome = withContext(Dispatchers.IO) {
-        val peopleResponse = request(base, token, "/people")
-        val peopleArray = peopleResponse.optJSONArray("people")
-            ?: throw AdultSafeConnectionException("The WordPress people response is missing its records list.")
-        val p = peopleArray.objects().map(::person).filter { allowDemoRecords || !it.demo }
-        val d = request(base, token, "/dashboard")
-        val tileArray = d.optJSONArray("tiles")
-            ?: throw AdultSafeConnectionException("The WordPress dashboard response is missing its tiles.")
-        val tiles = tileArray.objects().map {
-            LiveTile(it.optString("key"), it.optString("label"), it.optInt("count"), it.optString("filter"))
-        }.filter { it.count > 0 }
-        val alertsJson = request(base, token, "/alerts")
-        val alertsData = alertsJson.optJSONArray("items")
-            ?: throw AdultSafeConnectionException("The WordPress alerts response is missing its items list.")
-        val alerts = alertsData.objects().map {
-            LiveAlert(it.optString("title"), it.optString("message"), it.optString("severity"), it.optString("person_id"))
+        val unavailable = mutableListOf<String>()
+        fun optional(path: String, label: String): JSONObject? = try {
+            request(base, token, path)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            unavailable.add(label + " (" + (e.message ?: "unavailable") + ")")
+            null
         }
-        val docJson = request(base, token, "/workspaces/default/document-acknowledgements")
-        val docRows = docJson.optJSONArray("rows")
-            ?: throw AdultSafeConnectionException("The document response is missing its records list.")
-        val awaitingDocuments = docRows.objects().filter { row ->
+        val peopleResponse = optional("/people", "People")
+        val p = peopleResponse?.optJSONArray("people")?.objects()?.map(::person)
+            ?.filter { allowDemoRecords || !it.demo }.orEmpty()
+        if (peopleResponse != null && !peopleResponse.has("people")) unavailable.add("People (invalid response)")
+        val dashboard = optional("/dashboard", "Dashboard")
+        val tiles = dashboard?.optJSONArray("tiles")?.objects()?.map {
+            LiveTile(it.optString("key"), it.optString("label"), it.optInt("count"), it.optString("filter"))
+        }?.filter { it.count > 0 }.orEmpty()
+        if (dashboard != null && !dashboard.has("tiles")) unavailable.add("Dashboard (invalid response)")
+        val alertsJson = optional("/alerts", "Alerts")
+        val alerts = alertsJson?.optJSONArray("items")?.objects()?.map {
+            LiveAlert(it.optString("title"), it.optString("message"), it.optString("severity"), it.optString("person_id"))
+        }.orEmpty()
+        if (alertsJson != null && !alertsJson.has("items")) unavailable.add("Alerts (invalid response)")
+        val docJson = optional("/workspaces/default/document-acknowledgements", "Documents")
+        val awaitingDocuments = docJson?.optJSONArray("rows")?.objects()?.filter { row ->
             val states = row.optJSONObject("documents") ?: JSONObject()
             val keys = states.keys()
             var pending = false
@@ -126,8 +132,10 @@ object LiveApi {
                 if (state == "required" || state == "followup" || state == "signing_pending") pending = true
             }
             pending
-        }.map { it.optString("person_id") }.toSet()
-        LiveHome(p, tiles, alerts, awaitingDocuments)
+        }?.map { it.optString("person_id") }?.toSet().orEmpty()
+        if (docJson != null && !docJson.has("rows")) unavailable.add("Documents (invalid response)")
+        if (unavailable.size == 4) throw AdultSafeConnectionException("All AdultSafe home sections are unavailable. Please retry.")
+        LiveHome(p, tiles, alerts, awaitingDocuments, unavailable)
     }
 
     suspend fun filteredPeople(base: String, token: String, filter: String): List<LivePerson> = withContext(Dispatchers.IO) {
@@ -152,6 +160,40 @@ object LiveApi {
             LiveEvidence(it.optString("id"), it.optString("original_name"), it.optString("document_key"))
         }
     }
+    suspend fun viewEvidence(base: String, token: String, evidenceId: String): Pair<String, ByteArray> = withContext(Dispatchers.IO) {
+        require(evidenceId.matches(Regex("[A-Za-z0-9_-]{1,128}"))) { "Invalid evidence identifier." }
+        val con = open(base + ROOT + "/id-evidence/" + evidenceId + "/view", token, "GET")
+        try {
+            val status = con.responseCode
+            if (status !in 200..299) {
+                throw AdultSafeConnectionException(when (status) {
+                    401, 403 -> "You do not have permission to view this ID evidence."
+                    404 -> "The stored evidence could not be found."
+                    else -> "Evidence viewing failed (HTTP " + status + ")."
+                })
+            }
+            val mime = con.contentType?.substringBefore(';')?.trim()?.lowercase().orEmpty()
+            require(mime in setOf("image/jpeg", "image/png", "image/webp", "application/pdf")) {
+                "The server returned an unsupported evidence file type."
+            }
+            val bytes = con.inputStream.use { input ->
+                val out = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    if (out.size() + n > 15 * 1024 * 1024) {
+                        throw AdultSafeConnectionException("Evidence file exceeds the 15 MB viewer limit.")
+                    }
+                    out.write(buffer, 0, n)
+                }
+                out.toByteArray()
+            }
+            require(bytes.isNotEmpty()) { "The server returned an empty evidence file." }
+            Pair(mime, bytes)
+        } finally { con.disconnect() }
+    }
+
     suspend fun documents(base: String, token: String, id: String): List<LiveDocument> = withContext(Dispatchers.IO) {
         val obj = request(base, token, "/people/" + id + "/documents")
         val states = obj.optJSONObject("states") ?: JSONObject()
@@ -165,7 +207,17 @@ object LiveApi {
         result
     }
     suspend fun history(base: String, token: String, id: String): JSONArray = withContext(Dispatchers.IO) {
-        request(base, token, "/people/" + id + "/documents/history").optJSONArray("history") ?: JSONArray()
+        val payload = request(base, token, "/people/" + id + "/documents/history")
+        val combined = JSONArray()
+        for (field in listOf("history", "compliance_history")) {
+            val rows = payload.optJSONArray(field) ?: continue
+            for (index in 0 until rows.length()) combined.put(rows.optJSONObject(index))
+        }
+        combined
+    }
+    suspend fun acknowledgement(base: String, token: String, id: String, index: Int): JSONObject = withContext(Dispatchers.IO) {
+        require(index >= 0) { "Invalid acknowledgement index." }
+        request(base, token, "/people/" + id + "/documents/acknowledgement/" + index)
     }
     suspend fun metadata(base: String, token: String): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/settings/meta")
@@ -175,6 +227,9 @@ object LiveApi {
     }
     suspend fun createPerson(base: String, token: String, values: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/people", "POST", values)
+    }
+    suspend fun startDbsRenewal(base: String, token: String, id: String): JSONObject = withContext(Dispatchers.IO) {
+        request(base, token, "/people/" + id + "/dbs/renewal", "POST", JSONObject())
     }
     suspend fun updateDbs(base: String, token: String, id: String, values: JSONObject): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/people/" + id + "/dbs", "PUT", values)

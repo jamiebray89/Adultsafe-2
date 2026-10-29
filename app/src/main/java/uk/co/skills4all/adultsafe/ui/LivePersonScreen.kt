@@ -1,12 +1,14 @@
 package uk.co.skills4all.adultsafe.ui
 
-import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.clickable
+import android.app.DatePickerDialog
 import androidx.core.content.FileProvider
 import java.io.File
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -20,9 +22,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -31,7 +36,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -43,14 +47,18 @@ import uk.co.skills4all.adultsafe.ui.components.SectionTitle
 import uk.co.skills4all.adultsafe.ui.theme.AdultSafeMuted
 import java.io.ByteArrayOutputStream
 import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.ResolverStyle
 
 @Composable
-fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit, onChanged: () -> Unit) {
+fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit, onChanged: () -> Unit,
+    onExternalEvidenceActivity: (Boolean) -> Unit) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val url = session.site.url
     val token = session.token
-    var page by remember(person.id) { mutableStateOf("Details") }
+    var page by rememberSaveable(person.id) { mutableStateOf("Details") }
+    val personListState = rememberLazyListState()
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -62,6 +70,12 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
     var evidence by remember(person.id) { mutableStateOf<List<LiveEvidence>>(emptyList()) }
     var history by remember(person.id) { mutableStateOf<JSONArray?>(null) }
     var metadata by remember { mutableStateOf<JSONObject?>(null) }
+    var dbsDirty by remember { mutableStateOf(false) }
+    var dbsDraft by remember { mutableStateOf<JSONObject?>(null) }
+    var pendingNavigation by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var confirmRenewal by remember { mutableStateOf(false) }
+    var acknowledgementDetail by remember { mutableStateOf<JSONObject?>(null) }
+    var acknowledgementLoading by remember { mutableStateOf(false) }
 
     val canEditPeople = session.permissions.contains("people.write") || session.roles.contains("manager")
     val canEditDbs = session.permissions.contains("dbs.write") || session.roles.any { it == "manager" || it == "dbs_lead" }
@@ -93,16 +107,56 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         finally { busy = false }
     }
 
-    fun update(task: suspend () -> Unit) {
+    fun update(onSuccess: () -> Unit = {}, task: suspend () -> Unit) {
         if (busy) return
         busy = true
         error = null
         message = null
         scope.launch {
-            try { task(); message = "Changes saved"; reload++; onChanged() }
+            try { task(); message = "Changes saved"; reload++; onChanged(); onSuccess() }
             catch (e: Exception) { error = e.message ?: "Unable to save. No changes were confirmed." }
             finally { busy = false }
         }
+    }
+
+    fun navigate(action: () -> Unit) {
+        if (page == "DBS / ID" && dbsDirty) pendingNavigation = action else action()
+    }
+    if (confirmRenewal) {
+        AlertDialog(
+            onDismissRequest = { confirmRenewal = false },
+            title = { Text("Start new DBS application?") },
+            text = { Text("The previous DBS application will be retained in history. The new application requires a fresh ID check. This cannot be undone.") },
+            confirmButton = { TextButton(enabled = !busy, onClick = {
+                confirmRenewal = false
+                update { LiveApi.startDbsRenewal(url, token, person.id) }
+            }) { Text("Start renewal") } },
+            dismissButton = { TextButton(onClick = { confirmRenewal = false }) { Text("Cancel") } }
+        )
+    }
+    if (pendingNavigation != null) {
+        AlertDialog(
+            onDismissRequest = { pendingNavigation = null },
+            title = { Text("Unsaved DBS changes") },
+            text = { Text("Save the changed DBS dates before leaving this record?") },
+            confirmButton = {
+                TextButton(enabled = !busy && dbsDraft != null, onClick = {
+                    val draft = dbsDraft ?: return@TextButton
+                    update(onSuccess = {
+                        dbsDirty = false
+                        val next = pendingNavigation
+                        pendingNavigation = null
+                        next?.invoke()
+                    }) { LiveApi.updateDbs(url, token, person.id, draft) }
+                }) { Text("Save changes") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { dbsDirty = false; pendingNavigation?.invoke(); pendingNavigation = null }) { Text("Discard") }
+                    TextButton(onClick = { pendingNavigation = null }) { Text("Keep editing") }
+                }
+            }
+        )
     }
 
     var showSignature by remember { mutableStateOf(false) }
@@ -132,14 +186,14 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         )
     }
 
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { TextButton(onClick = onBack) { Text("← Back to people") } }
+    LazyColumn(state = personListState, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { TextButton(onClick = { navigate(onBack) }) { Text("← Back to people") } }
         item { Text(person.name, fontSize = 24.sp, color = uk.co.skills4all.adultsafe.ui.theme.AdultSafeNavy) }
         item { Text(person.personType.replaceFirstChar { it.uppercase() } + " · " + person.role, color = AdultSafeMuted) }
         item {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("Details", "DBS / ID", "Documents", "History").forEach { tab ->
-                    FilterChip(selected = page == tab, onClick = { page = tab }, label = { Text(tab) })
+                    FilterChip(selected = page == tab, onClick = { navigate { page = tab } }, label = { Text(tab) })
                 }
             }
         }
@@ -161,14 +215,14 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
             "DBS / ID" -> {
                 item {
                     val record = dbs
-                    if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onSave = { changes ->
-                        update { LiveApi.updateDbs(url, token, person.id, changes) }
-                    })
+                    if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onDirty = { dirty, draft -> dbsDirty = dirty; dbsDraft = draft }, onSave = { changes ->
+                        update(onSuccess = { dbsDirty = false }) { LiveApi.updateDbs(url, token, person.id, changes) }
+                    }, onRenewal = { confirmRenewal = true })
                 }
                 item {
                     val record = idCheck
                     if (person.personType == "volunteer" && record != null) IdEvidenceCard(
-                        record, evidence, busy, canId, canIdCheck, context,
+                        record, evidence, busy, canId, canIdCheck, context, session, onExternalEvidenceActivity,
                         onUpload = { name, mime, bytes, key ->
                             update { LiveApi.upload(url, token, person.id, name, mime, bytes, key) }
                         },
@@ -191,14 +245,57 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 )
             }
             "History" -> item { AppCard {
-                SectionTitle("Document history")
+                if (acknowledgementDetail != null) {
+                    val detail = acknowledgementDetail!!
+                    Text("Signed acknowledgement", color = Color(0xFF123D71))
+                    Text("Date: " + detail.optString("signed_at"))
+                    Text("Recorded by user #" + detail.optString("user_id"))
+                    Text("Documents: " + detail.optJSONObject("items")?.let { obj ->
+                        val names = mutableListOf<String>()
+                        val keys = obj.keys()
+                        while (keys.hasNext()) { val key = keys.next(); names.add(obj.optString(key)) }
+                        names.joinToString(", ")
+                    }.orEmpty())
+                    val signature = detail.optString("signature")
+                    if (signature.startsWith("data:image/png;base64,")) {
+                        val bytes = remember(signature) { runCatching { Base64.decode(signature.substringAfter(","), Base64.DEFAULT) }.getOrNull() }
+                        val bitmap = remember(bytes) { bytes?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) } }
+                        if (bitmap != null) {
+                            androidx.compose.foundation.Image(
+                                bitmap = bitmap.asImageBitmap(), contentDescription = "Saved handover signature",
+                                modifier = Modifier.fillMaxWidth().height(160.dp)
+                            )
+                        }
+                    }
+                    TextButton(onClick = { acknowledgementDetail = null }) { Text("Close acknowledgement") }
+                    HorizontalDivider()
+                }
+
+                SectionTitle("Record history", "DBS changes and document handovers")
                 val rows = history
-                if (!canViewHistory) Text("Your account cannot view document history.")
-                else if (rows == null || rows.length() == 0) Text("No recorded document handovers yet.")
+                if (!canViewHistory) Text("Your account cannot view record history.")
+                else if (rows == null || rows.length() == 0) Text("No recorded changes yet.")
                 else (0 until rows.length()).forEach { idx ->
                     val row = rows.optJSONObject(idx) ?: JSONObject()
                     Text(row.optString("event", "Document event").replace("_", " "), color = Color(0xFF123D71))
-                    Text(row.optString("signed_at"), color = AdultSafeMuted)
+                    Text(row.optString("recorded_at").ifBlank { row.optString("signed_at") }, color = AdultSafeMuted)
+                    if (row.has("field")) Text(row.optString("field").replace("_", " ") + ": " + row.optString("old_value").ifBlank { "Not set" } + " → " + row.optString("new_value").ifBlank { "Cleared" }, color = AdultSafeMuted)
+                    if (row.has("user_id")) Text("Recorded by user #" + row.optString("user_id"), color = AdultSafeMuted, fontSize = 12.sp)
+                    if (row.optBoolean("has_signature") && row.has("acknowledgement_index")) {
+                        OutlinedButton(
+                            enabled = !acknowledgementLoading,
+                            onClick = {
+                                acknowledgementLoading = true
+                                scope.launch {
+                                    try {
+                                        acknowledgementDetail = LiveApi.acknowledgement(url, token, person.id, row.optInt("acknowledgement_index"))
+                                    } catch (e: Exception) {
+                                        error = e.message ?: "Could not load signed acknowledgement."
+                                    } finally { acknowledgementLoading = false }
+                                }
+                            }
+                        ) { Text("View signed acknowledgement") }
+                    }
                     // Never print signature data or untrusted HTML into the UI.
                     HorizontalDivider()
                 }
@@ -227,9 +324,19 @@ private fun PersonEditCard(
     AppCard {
         SectionTitle("Person details", "Details saved on your AdultSafe WordPress site.")
         Spacer(Modifier.height(10.dp))
-        OutlinedTextField(name, { name = it }, label = { Text("Full name") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(email, { email = it }, label = { Text("Email address") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Text("Role", color = AdultSafeMuted)
+        val missingFields = buildList {
+            if (name.isBlank()) add("Full name (required)")
+            if (role.isBlank()) add("Role (required)")
+            if (email.isBlank()) add("Email address (missing)")
+            if (membership.isBlank() && personType == "volunteer") add("Membership number (missing)")
+        }
+        if (missingFields.isNotEmpty()) {
+            Text("⚠ Missing information: " + missingFields.joinToString(", "),
+                color = Color(0xFF986000), fontSize = 13.sp)
+        }
+        OutlinedTextField(name, { name = it }, label = { Text(if (name.isBlank()) "⚠ Full name — required" else "Full name") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(email, { email = it }, label = { Text(if (email.isBlank()) "⚠ Email address — missing" else "Email address") }, enabled = canEdit, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text(if (role.isBlank()) "⚠ Role — required" else "Role", color = if (role.isBlank()) Color(0xFF986000) else AdultSafeMuted)
         Box {
             OutlinedButton(onClick = { roleMenu = true }, enabled = canEdit && choices != null, modifier = Modifier.fillMaxWidth()) {
                 Text(choices?.optString(role).orEmpty().ifBlank { role.ifBlank { "Select a role" } })
@@ -245,7 +352,7 @@ private fun PersonEditCard(
                 }
             }
         }
-        OutlinedTextField(membership, { membership = it }, label = { Text("Membership number") }, enabled = canEdit, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(membership, { membership = it }, label = { Text(if (membership.isBlank() && personType == "volunteer") "⚠ Membership number — missing" else "Membership number") }, enabled = canEdit, modifier = Modifier.fillMaxWidth())
         Text("Person type", color = AdultSafeMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(personType == "volunteer", onClick = { if (canEdit) personType = "volunteer" }, label = { Text("Volunteer") })
@@ -283,45 +390,151 @@ private fun PersonEditCard(
 }
 
 @Composable
-private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onSave: (JSONObject) -> Unit) {
-    var requested by remember(record.toString()) { mutableStateOf(record.optString("requested_date")) }
-    var submitted by remember(record.toString()) { mutableStateOf(record.optString("submitted_date")) }
-    var result by remember(record.toString()) { mutableStateOf(record.optString("result_received_date")) }
-    var expiry by remember(record.toString()) { mutableStateOf(record.optString("expiry_date")) }
-    fun validDate(value: String): Boolean = value.isBlank() ||
-        runCatching { LocalDate.parse(value); true }.getOrDefault(false)
-    val allDatesValid = listOf(requested, submitted, result, expiry).all(::validDate)
+private fun DbsEditCard(record: JSONObject, busy: Boolean, canEdit: Boolean, onDirty: (Boolean, JSONObject) -> Unit, onSave: (JSONObject) -> Unit, onRenewal: () -> Unit) {
+    val ukDateFormat = remember { DateTimeFormatter.ofPattern("dd/MM/uuuu").withResolverStyle(ResolverStyle.STRICT) }
+    fun displayDate(value: String): String = if (value.isBlank()) "" else
+        runCatching { LocalDate.parse(value).format(ukDateFormat) }.getOrDefault(value)
+    fun apiDate(value: String): String = if (value.isBlank()) "" else
+        LocalDate.parse(value, ukDateFormat).toString()
+    var requested by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("requested_date"))) }
+    var submitted by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("submitted_date"))) }
+    var result by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("result_received_date"))) }
+    var expiry by rememberSaveable(record.toString()) { mutableStateOf(displayDate(record.optString("expiry_date"))) }
+    var proposedExpiry by remember { mutableStateOf<String?>(null) }
+    val draft = remember(requested, submitted, result, expiry) {
+        JSONObject().put("requested_date", apiDate(requested)).put("submitted_date", apiDate(submitted))
+            .put("result_received_date", apiDate(result)).put("expiry_date", apiDate(expiry))
+    }
+    val isDirty = listOf("requested_date", "submitted_date", "result_received_date", "expiry_date")
+        .any { draft.optString(it) != record.optString(it) }
+    SideEffect { onDirty(isDirty, draft) }
+    val datePickerContext = LocalContext.current
+    fun pickDate(current: String, setDate: (String) -> Unit) {
+        val initial = runCatching { LocalDate.parse(current, ukDateFormat) }.getOrDefault(LocalDate.now())
+        DatePickerDialog(datePickerContext, { _, year, month, day ->
+            setDate(LocalDate.of(year, month + 1, day).format(ukDateFormat))
+        }, initial.year, initial.monthValue - 1, initial.dayOfMonth).show()
+    }
+    @Composable
+    fun DateRow(label: String, value: String, update: (String) -> Unit) {
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                OutlinedTextField(value, {}, readOnly = true, enabled = false,
+                    label = { Text(label) }, modifier = Modifier.fillMaxWidth(),
+                    singleLine = true, placeholder = { Text("Tap to select date") })
+                if (canEdit) Box(Modifier.matchParentSize().clickable { pickDate(value, update) })
+            }
+            if (canEdit && value.isNotBlank()) TextButton(onClick = { update("") }) { Text("Clear") }
+        }
+    }
     AppCard {
-        SectionTitle("DBS record", "Use YYYY-MM-DD dates; leave expiry blank to use site defaults after a result.")
+        SectionTitle("DBS record", "Tap Select to choose a date. Dates display as DD/MM/YYYY.")
         Text("Current status: " + record.optString("status").replace("_", " "), color = AdultSafeMuted)
-        OutlinedTextField(requested, { requested = it }, label = { Text("DBS requested") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(submitted, { submitted = it }, label = { Text("Submitted date") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(result, { result = it }, label = { Text("Result received") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(expiry, { expiry = it }, label = { Text("Expiry date") }, modifier = Modifier.fillMaxWidth())
-        if (!allDatesValid) Text("Enter dates as real calendar dates in YYYY-MM-DD format.", color = MaterialTheme.colorScheme.error)
+        DateRow("DBS requested", requested) { requested = it }
+        DateRow("Submitted date", submitted) { submitted = it }
+        DateRow("Result received", result) { newDate ->
+            result = newDate
+            if (newDate.isNotBlank()) {
+                proposedExpiry = LocalDate.parse(newDate, ukDateFormat).plusYears(5).format(ukDateFormat)
+            }
+        }
+        if (proposedExpiry != null) {
+            AlertDialog(
+                onDismissRequest = { proposedExpiry = null },
+                title = { Text("Confirm DBS expiry") },
+                text = { Text("Use " + proposedExpiry + " as the expiry date (five years after result received)?") },
+                confirmButton = { TextButton(onClick = { expiry = proposedExpiry.orEmpty(); proposedExpiry = null }) { Text("Confirm expiry") } },
+                dismissButton = { TextButton(onClick = { proposedExpiry = null }) { Text("Set manually") } }
+            )
+        }
+        if (result.isBlank()) {
+            TextButton(onClick = {
+                datePickerContext.startActivity(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://thescouts.disclosures.co.uk/application")))
+            }) { Text("Check disclosure status") }
+        }
+        DateRow("Expiry date", expiry) { expiry = it }
+        if (record.optBoolean("renewal_pending")) Text("Renewal in progress: fresh ID check required.", color = Color(0xFF986000))
+        else if (canEdit && expiry.isNotBlank()) OutlinedButton(onClick = onRenewal, enabled = !busy && !isDirty) { Text("Start DBS renewal") }
         Spacer(Modifier.height(12.dp))
         Button(onClick = {
-            onSave(JSONObject().put("requested_date", requested).put("submitted_date", submitted)
-                .put("result_received_date", result).put("expiry_date", expiry))
-        }, enabled = !busy && canEdit && allDatesValid, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
+            onSave(draft)
+        }, enabled = !busy && canEdit, modifier = Modifier.fillMaxWidth()) { Text("Save DBS dates") }
     }
 }
 
 @Composable
 private fun IdEvidenceCard(
-    record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context,
+    record: JSONObject, evidence: List<LiveEvidence>, busy: Boolean, canId: Boolean, canIdCheck: Boolean, context: Context, session: AppSession,
+    onExternalEvidenceActivity: (Boolean) -> Unit,
     onUpload: (String, String, ByteArray, String) -> Unit, onCheck: (JSONObject) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var checker by remember(record.toString()) { mutableStateOf(record.optString("checker_name")) }
     var membership by remember(record.toString()) { mutableStateOf(record.optString("checker_membership_number")) }
     var uploadError by remember { mutableStateOf<String?>(null) }
+    // Document names are grouped for usability; the server must remain authoritative for DBS eligibility.
+    val evidenceTypes = listOf(
+        "Group 1 — Passport", "Group 1 — Biometric residence permit",
+        "Group 1 — Current photocard driving licence", "Group 1 — Birth certificate (issued within 12 months)",
+        "Group 1 — Adoption certificate", "Group 1 — Immigration document",
+        "Group 2a — Birth certificate (issued after 12 months)",
+        "Group 2a — Marriage certificate", "Group 2a — Civil partnership certificate",
+        "Group 2a — Firearms licence", "Group 2a — HM Forces ID card",
+        "Group 2a — Photocard driving licence (non-UK)",
+        "Group 2b — Bank or building society statement",
+        "Group 2b — Credit card statement", "Group 2b — Utility bill",
+        "Group 2b — Council tax statement", "Group 2b — Mortgage statement",
+        "Group 2b — P45 or P60", "Group 2b — Government benefit letter",
+        "Group 2b — Financial statement", "Group 2b — Work permit or visa",
+        "Group 2b — Letter from head teacher or college principal"
+    )
+    val usedTypes = evidence.map { it.documentKey.lowercase() }.toSet()
+    val availableTypes = evidenceTypes.filter { type ->
+        type.lowercase().replace(" ", "_") !in usedTypes
+    }
+    var chosenType by rememberSaveable { mutableStateOf("") }
+    var typeMenuExpanded by remember { mutableStateOf(false) }
     fun handleBytes(mime: String, bytes: ByteArray) {
         if (bytes.isEmpty() || bytes.size > 15*1024*1024) { uploadError = "Please select a file up to 15 MB."; return }
-        val next = (evidence.size + 1).coerceAtMost(10)
-        onUpload("ID evidence " + next, mime, bytes, "id_document_" + next)
+        if (chosenType.isBlank() || chosenType !in availableTypes) { uploadError = "Choose an unused ID type first."; return }
+        val key = chosenType.lowercase().replace(" ", "_")
+        onUpload(chosenType, mime, bytes, key)
+    }
+    var viewingEvidence by remember { mutableStateOf(false) }
+    fun viewStoredEvidence(item: LiveEvidence) {
+        if (viewingEvidence) return
+        viewingEvidence = true
+        uploadError = null
+        scope.launch {
+            try {
+                val (mime, bytes) = LiveApi.viewEvidence(session.site.url, session.token, item.id)
+                val extension = when (mime) {
+                    "image/jpeg" -> ".jpg"
+                    "image/png" -> ".png"
+                    "image/webp" -> ".webp"
+                    else -> ".pdf"
+                }
+                val file = withContext(Dispatchers.IO) {
+                    val dir = File(context.cacheDir, "adultsafe_view").apply { mkdirs() }
+                    dir.listFiles()?.forEach { it.delete() }
+                    File.createTempFile("evidence_", extension, dir).apply { writeBytes(bytes) }
+                }
+                val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+                val intent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, mime)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                uploadError = e.message ?: "Could not open stored evidence."
+            } finally {
+                viewingEvidence = false
+            }
+        }
     }
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        onExternalEvidenceActivity(false)
         if (uri != null) {
             scope.launch {
                 try {
@@ -350,10 +563,12 @@ private fun IdEvidenceCard(
             }
         }
     }
-    var cameraFile by remember { mutableStateOf<File?>(null) }
+    // Save the pending path across activity recreation while the external camera is open.
+    var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     val fullCamera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        val file = cameraFile
-        cameraFile = null
+        onExternalEvidenceActivity(false)
+        val file = cameraPath?.let(::File)
+        cameraPath = null
         if (file != null) {
             scope.launch {
                 try {
@@ -384,32 +599,69 @@ private fun IdEvidenceCard(
         try {
             val directory = File(context.cacheDir, "adultsafe_capture").apply { mkdirs() }
             val file = File.createTempFile("evidence_", ".jpg", directory)
-            cameraFile = file
+            cameraPath = file.absolutePath
             val uri = FileProvider.getUriForFile(context, context.packageName + ".files", file)
+            onExternalEvidenceActivity(true)
             fullCamera.launch(uri)
         } catch (e: Exception) {
-            cameraFile?.delete()
-            cameraFile = null
+            cameraPath?.let { File(it).delete() }
+            cameraPath = null
+            onExternalEvidenceActivity(false)
             uploadError = e.message ?: "Camera could not open."
         }
-    }
-    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) captureFullResolution() else uploadError = "Camera permission is needed to take an ID photo."
     }
 
     AppCard {
         SectionTitle("ID evidence", "ID photos upload directly to the site's private evidence store.")
         Text(evidence.size.toString() + " uploaded · minimum " + record.optInt("minimum_evidence", 3), color = AdultSafeMuted)
-        evidence.forEach { e -> Text("✓ " + e.name.ifBlank { e.documentKey }) }
+        evidence.forEach { e ->
+            val key = e.documentKey.replace('_', ' ').trim()
+            val label = when (key.lowercase()) {
+                "passport" -> "Passport"
+                "driving licence", "driving license" -> "Driving licence"
+                "birth certificate" -> "Birth certificate"
+                "marriage certificate" -> "Marriage certificate"
+                "other id" -> "Other ID"
+                else -> if (key.isBlank() || key == "0") "Unclassified ID evidence" else key
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(label, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = { viewStoredEvidence(e) },
+                    enabled = !viewingEvidence && e.id.isNotBlank()) { Text("View") }
+            }
+        }
+        if (evidence.isNotEmpty()) Text(
+            "Files open temporarily in an Android viewer. Only authorised users can retrieve them.",
+            color = AdultSafeMuted, fontSize = 12.sp
+        )
         if (uploadError != null) Text(uploadError.orEmpty(), color = MaterialTheme.colorScheme.error)
         if (canId) {
             Spacer(Modifier.height(10.dp))
+            Box {
+                OutlinedButton(onClick = { typeMenuExpanded = true }) { Text("ID type: " + chosenType.ifBlank { "Select document" } + " ▾") }
+                DropdownMenu(expanded = typeMenuExpanded, onDismissRequest = { typeMenuExpanded = false }) {
+                    availableTypes.forEach { type ->
+                        DropdownMenuItem(text = { Text(type) }, onClick = {
+                            chosenType = type
+                            typeMenuExpanded = false
+                        })
+                    }
+                }
+            }
             Button(onClick = {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
-                    captureFullResolution()
-                else cameraPermission.launch(Manifest.permission.CAMERA)
-            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
-            OutlinedButton(onClick = { photoPicker.launch(arrayOf("image/*", "application/pdf")) },
+                // External camera apps do not require our app to hold CAMERA permission.
+                captureFullResolution()
+            }, enabled = !busy && chosenType in availableTypes, modifier = Modifier.fillMaxWidth()) { Text("Take ID photo") }
+            OutlinedButton(onClick = {
+                try {
+                    onExternalEvidenceActivity(true)
+                    photoPicker.launch(arrayOf("image/*", "application/pdf"))
+                } catch (e: Exception) {
+                    onExternalEvidenceActivity(false)
+                    uploadError = e.message ?: "File picker could not open."
+                }
+            },
                 enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("Choose photo or file") }
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
@@ -436,41 +688,64 @@ private fun DocumentsEditCard(
 ) {
     val selected = remember(documents) { mutableStateListOf<String>() }
     val notRequired = remember(documents) {
-        mutableStateListOf<String>().also { it.addAll(documents.filter { d -> d.state == "not_required" }.map { d -> d.key }) }
+        mutableStateListOf<String>().also { list ->
+            list.addAll(documents.filter { it.state == "not_required" }.map { it.key })
+        }
     }
-    val outstanding = documents.filter { it.state == "required" }
+    val outstanding = documents.filter { it.state == "required" && it.key !in notRequired }
     AppCard {
-        SectionTitle("Documents", "Select outstanding documents to record a signed handover or request confirmation.")
+        SectionTitle("Documents", "Choose which documents are required, then select outstanding items for handover.")
         if (documents.isEmpty()) Text("No document requirements are configured.", color = AdultSafeMuted)
         documents.forEach { doc ->
-            Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                if (doc.state == "required") {
-                    Checkbox(checked = doc.key in selected, onCheckedChange = { yes ->
-                        if (yes) selected.add(doc.key) else selected.remove(doc.key)
-                    })
+            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                Text(doc.label, fontSize = 17.sp)
+                Text(
+                    if (doc.state == "signed") "Received — signed acknowledgement recorded"
+                    else if (doc.key in notRequired) "Not required"
+                    else "Required — awaiting handover",
+                    color = AdultSafeMuted, fontSize = 12.sp
+                )
+                if (doc.state != "signed" && canRequirements) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        androidx.compose.material3.RadioButton(
+                            selected = doc.key !in notRequired,
+                            onClick = { notRequired.remove(doc.key) }
+                        )
+                        Text("Required", modifier = Modifier.padding(end = 12.dp))
+                        androidx.compose.material3.RadioButton(
+                            selected = doc.key in notRequired,
+                            onClick = { if (doc.key !in notRequired) notRequired.add(doc.key); selected.remove(doc.key) }
+                        )
+                        Text("Not required")
+                    }
                 }
-                Column(Modifier.weight(1f)) {
-                    Text(doc.label)
-                    Text(doc.state.replace("_", " "), color = AdultSafeMuted, fontSize = 12.sp)
-                }
-                if (doc.state != "signed") {
-                    Checkbox(checked = doc.key in notRequired, enabled = canRequirements, onCheckedChange = { yes ->
-                        if (yes) notRequired.add(doc.key) else notRequired.remove(doc.key)
-                    })
-                    Text("N/R", fontSize = 12.sp)
+                if (doc.state == "required" && doc.key !in notRequired) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(
+                            checked = doc.key in selected,
+                            onCheckedChange = { yes -> if (yes) selected.add(doc.key) else selected.remove(doc.key) }
+                        )
+                        Text("Select for handover / confirmation")
+                    }
                 }
             }
+            HorizontalDivider()
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = {
-            onRequirements(documents.filter { it.key !in notRequired }.map { it.key }, notRequired.toList())
-        }, enabled = !busy && canRequirements, modifier = Modifier.fillMaxWidth()) { Text("Save requirements") }
-        Button(onClick = { onSign(selected.toList()) }, enabled = !busy && canSign && selected.isNotEmpty(),
-            modifier = Modifier.fillMaxWidth()) { Text("Record documents given & sign") }
-        OutlinedButton(onClick = { onRequest(selected.toList()) }, enabled = !busy && canRequest && selected.isNotEmpty(),
-            modifier = Modifier.fillMaxWidth()) { Text("Create confirmation link") }
+        OutlinedButton(
+            onClick = { onRequirements(documents.filter { it.key !in notRequired }.map { it.key }, notRequired.toList()) },
+            enabled = !busy && canRequirements, modifier = Modifier.fillMaxWidth()
+        ) { Text("Save requirements") }
+        Button(
+            onClick = { onSign(selected.toList()) },
+            enabled = !busy && canSign && selected.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+        ) { Text("Record documents given & sign") }
+        OutlinedButton(
+            onClick = { onRequest(selected.toList()) },
+            enabled = !busy && canRequest && selected.isNotEmpty(), modifier = Modifier.fillMaxWidth()
+        ) { Text("Create confirmation link") }
         if (!canSign) Text("Document recording is not allowed for your account.", color = AdultSafeMuted)
-        if (outstanding.isEmpty()) Text("No required documents awaiting handover.", color = AdultSafeMuted)
+        if (outstanding.isEmpty()) Text("No outstanding required documents.", color = AdultSafeMuted)
     }
 }
 

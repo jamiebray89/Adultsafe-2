@@ -1,10 +1,12 @@
 package uk.co.skills4all.adultsafe.ui
 
 import android.app.KeyguardManager
+import androidx.activity.compose.BackHandler
 import android.content.Context
 import android.app.Activity
 import android.os.Build
 import android.os.SystemClock
+import kotlinx.coroutines.delay
 import android.widget.Toast
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -16,7 +18,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -34,6 +40,7 @@ import androidx.compose.material3.*
 import org.json.JSONArray
 import org.json.JSONObject
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -65,6 +72,7 @@ fun AdultSafeRoot() {
     var mode by remember { mutableStateOf(if (restored == null) AppMode.Disconnected else AppMode.Locked) }
     var tab by remember { mutableStateOf(Tab.Home) }
     var selected by remember { mutableStateOf<LivePerson?>(null) }
+    val personStateHolder = rememberSaveableStateHolder()
     var filter by remember { mutableStateOf("") }
     var data by remember { mutableStateOf<LiveHome?>(null) }
     var filtered by remember { mutableStateOf<List<LivePerson>?>(null) }
@@ -73,6 +81,20 @@ fun AdultSafeRoot() {
     var refresh by remember { mutableIntStateOf(0) }
     var unlocking by remember { mutableStateOf(false) }
     var signingOut by remember { mutableStateOf(false) }
+    var confirmExit by remember { mutableStateOf(false) }
+    var externalEvidenceActivity by remember { mutableStateOf(false) }
+    var lastInteraction by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    var secondsRemaining by remember { mutableIntStateOf(300) }
+    var inForeground by remember { mutableStateOf(true) }
+    fun touch() { lastInteraction = SystemClock.elapsedRealtime(); secondsRemaining = 300 }
+    LaunchedEffect(mode, externalEvidenceActivity, inForeground) {
+        while (mode == AppMode.ConnectedLive && inForeground && !externalEvidenceActivity) {
+            val elapsed = (SystemClock.elapsedRealtime() - lastInteraction) / 1000
+            secondsRemaining = (300 - elapsed.toInt()).coerceAtLeast(0)
+            if (secondsRemaining == 0) { mode = AppMode.Locked; break }
+            delay(1000)
+        }
+    }
 
     fun validateUnlockedSession() {
         val active = session ?: return
@@ -91,6 +113,7 @@ fun AdultSafeRoot() {
                 SessionStore.save(context, updated)
                 session = updated
                 savedSites = SessionStore.saved(context)
+                touch()
                 mode = AppMode.ConnectedLive
             } catch (e: Exception) {
                 error = e.message ?: "Unable to verify your saved sign-in."
@@ -122,12 +145,16 @@ fun AdultSafeRoot() {
         if (activity == null) onDispose { }
         else {
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_STOP && mode == AppMode.ConnectedLive) {
-                    stoppedAt = SystemClock.elapsedRealtime()
-                } else if (event == Lifecycle.Event.ON_START && stoppedAt > 0L) {
-                    if (mode == AppMode.ConnectedLive &&
-                        SystemClock.elapsedRealtime() - stoppedAt >= 30000L) {
+                if (event == Lifecycle.Event.ON_STOP) {
+                    inForeground = false
+                    if (mode == AppMode.ConnectedLive) stoppedAt = SystemClock.elapsedRealtime()
+                } else if (event == Lifecycle.Event.ON_START) {
+                    inForeground = true
+                    if (mode == AppMode.ConnectedLive && !externalEvidenceActivity &&
+                        SystemClock.elapsedRealtime() - lastInteraction >= 300000L) {
                         mode = AppMode.Locked
+                    } else if (mode == AppMode.ConnectedLive && externalEvidenceActivity) {
+                        touch()
                     }
                     stoppedAt = 0L
                 }
@@ -229,6 +256,29 @@ fun AdultSafeRoot() {
         )
     }
 
+    BackHandler(enabled = mode == AppMode.ConnectedLive || mode == AppMode.ConnectedDemo) {
+        when {
+            showCreate -> showCreate = false
+            selected != null -> selected = null
+            tab != Tab.Home -> { tab = Tab.Home; filter = "" }
+            else -> confirmExit = true
+        }
+    }
+    if (confirmExit) {
+        AlertDialog(
+            containerColor = Color.White,
+            shape = RoundedCornerShape(20.dp),
+            onDismissRequest = { confirmExit = false },
+            title = { Text("Exit AdultSafe?", color = AdultSafeNavy, fontWeight = FontWeight.Bold) },
+            text = { Text("Close the app? Your sign-in will be kept for next time.") },
+            confirmButton = { TextButton(onClick = {
+                confirmExit = false
+                (context as? Activity)?.finish()
+            }) { Text("Exit") } },
+            dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("Cancel") } }
+        )
+    }
+
     when (mode) {
         AppMode.Disconnected, AppMode.Connecting, AppMode.Error -> SignInScreen(
             onUseDemo = {
@@ -245,6 +295,7 @@ fun AdultSafeRoot() {
                 selected = null
                 tab = Tab.Home
                 filter = ""
+                touch()
                 mode = AppMode.ConnectedLive
             }
         )
@@ -284,7 +335,8 @@ fun AdultSafeRoot() {
                                 Text(displayTitle + if (isDemo) " · Demo" else "", maxLines = 1,
                                     overflow = TextOverflow.Ellipsis, color = AdultSafeMuted, fontSize = 12.sp)
                             }
-                            IconButton(onClick = { refresh++ }, enabled = !isDemo && !loading) {
+                            if (!isDemo && secondsRemaining < 270) Text("${secondsRemaining / 60}:${(secondsRemaining % 60).toString().padStart(2, '0')}", fontSize = 11.sp, color = AdultSafeMuted)
+                            IconButton(onClick = { touch(); refresh++ }, enabled = !isDemo && !loading) {
                                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh live records", tint = AdultSafeNavy)
                             }
                         }
@@ -301,7 +353,7 @@ fun AdultSafeRoot() {
                                 Tab.Settings -> Icons.Outlined.Settings
                             }
                             NavigationBarItem(
-                                selected = tab == item, onClick = { selected = null; tab = item; if (item != Tab.People) filter = "" },
+                                selected = tab == item, onClick = { touch(); selected = null; tab = item; if (item != Tab.People) filter = "" },
                                 icon = { Icon(icon, contentDescription = null) },
                                 label = { Text(item.label, maxLines = 1, fontSize = 11.sp) },
                                 alwaysShowLabel = true
@@ -310,10 +362,14 @@ fun AdultSafeRoot() {
                     }
                 }
             ) { padding ->
-                Box(Modifier.padding(padding).fillMaxSize()) {
+                Box(Modifier.padding(padding).fillMaxSize().pointerInput(Unit) {
+                    awaitPointerEventScope { while (true) { awaitPointerEvent(); touch() } }
+                }) {
                     if (selected != null && session != null && !isDemo) {
-                        LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
-                            onChanged = { refresh++ })
+                        personStateHolder.SaveableStateProvider(selected!!.id) {
+                            LivePersonScreen(person = selected!!, session = session!!, onBack = { selected = null },
+                                onChanged = { refresh++ }, onExternalEvidenceActivity = { externalEvidenceActivity = it; touch() })
+                        }
                     } else if (selected != null && isDemo) {
                         Column(Modifier.padding(20.dp)) {
                             TextButton(onClick = { selected = null }) { Text("← Back") }
@@ -327,6 +383,17 @@ fun AdultSafeRoot() {
                                 Column(Modifier.padding(14.dp)) {
                                     Text(error.orEmpty(), color = Color(0xFF842525))
                                     TextButton(onClick = { refresh++ }) { Text("Retry") }
+                                }
+                            }
+                            if (!isDemo && !data?.unavailableSections.isNullOrEmpty()) {
+                                Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                    Column(Modifier.padding(12.dp)) {
+                                        Text("Some live sections are temporarily unavailable", fontWeight = FontWeight.Bold)
+                                        data?.unavailableSections?.forEach { section ->
+                                            Text(section, color = AdultSafeMuted, fontSize = 12.sp)
+                                        }
+                                        TextButton(onClick = { refresh++ }) { Text("Retry unavailable sections") }
+                                    }
                                 }
                             }
                             when (tab) {
@@ -451,17 +518,64 @@ private fun LivePeopleList(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LiveAlerts(alerts: List<LiveAlert>, people: List<LivePerson>, ready: Boolean, onPerson: (LivePerson) -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("adultsafe_alert_dismissals", Context.MODE_PRIVATE) }
+    var dismissed by remember { mutableStateOf(prefs.getStringSet("dismissed", emptySet())!!.toSet()) }
+    var showHistory by remember { mutableStateOf(false) }
+    var lastDismissed by remember { mutableStateOf<String?>(null) }
+    fun key(a: LiveAlert): String = (a.personId + "|" + a.title + "|" + a.message).hashCode().toString()
+    fun dismiss(key: String) {
+        dismissed = dismissed + key
+        prefs.edit().putStringSet("dismissed", dismissed).apply()
+        lastDismissed = key
+    }
+    fun undo() {
+        lastDismissed?.let { dismissed = dismissed - it; prefs.edit().putStringSet("dismissed", dismissed).apply() }
+        lastDismissed = null
+    }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text("Alerts", fontSize = 26.sp, fontWeight = FontWeight.Bold) }
-        if (alerts.isEmpty() && ready) item { MessageCard("No alerts", "There are no current alerts for this site.") }
-        items(alerts) { a ->
-            Card(onClick = { people.firstOrNull { it.id == a.personId }?.let(onPerson) },
-                colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(15.dp)) {
-                    Text(a.title, fontWeight = FontWeight.Bold)
-                    Text(a.message, color = AdultSafeMuted)
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Alerts", fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showHistory = !showHistory }) { Text(if (showHistory) "Current" else "Dismissed") }
+            }
+        }
+        if (lastDismissed != null) item { TextButton(onClick = { undo() }) { Text("Undo dismissal") } }
+        val visibleAlerts = alerts.filter { (key(it) in dismissed) == showHistory }
+        if (visibleAlerts.isEmpty() && ready) item { MessageCard("No alerts", "There are no alerts in this view.") }
+        items(visibleAlerts, key = { key(it) }) { a ->
+            val k = key(a)
+            val swipe = rememberSwipeToDismissBoxState(confirmValueChange = { value ->
+                if (value != SwipeToDismissBoxValue.Settled) {
+                    if (showHistory) { dismissed = dismissed - k; prefs.edit().putStringSet("dismissed", dismissed).apply() }
+                    else dismiss(k)
+                    false
+                } else true
+            })
+            SwipeToDismissBox(state = swipe, backgroundContent = { Box(Modifier.fillMaxSize().background(AdultSafeBackground)) }) {
+                Card(onClick = { people.firstOrNull { it.id == a.personId }?.let(onPerson) },
+                    colors = CardDefaults.cardColors(containerColor = Color.White), modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(a.title, fontWeight = FontWeight.Bold)
+                            Text(a.message, color = AdultSafeMuted)
+                        }
+                        var menu by remember { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { menu = true }) { Text("⋮") }
+                            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                DropdownMenuItem(text = { Text(if (showHistory) "Restore" else "Dismiss") },
+                                    onClick = {
+                                        menu = false
+                                        if (showHistory) { dismissed = dismissed - k; prefs.edit().putStringSet("dismissed", dismissed).apply() }
+                                        else dismiss(k)
+                                    })
+                            }
+                        }
+                    }
                 }
             }
         }

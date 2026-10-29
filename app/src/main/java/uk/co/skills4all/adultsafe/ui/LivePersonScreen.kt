@@ -558,19 +558,20 @@ private fun DocumentsEditCard(
         mutableStateListOf<String>().also { it.addAll(documents.filter { d -> d.state == "not_required" }.map { d -> d.key }) }
     }
     val outstanding = documents.filter { it.state == "required" }
+    val requiredSelection = documents.filter { it.key !in notRequired && it.state != "signed" }.map { it.key }
     AppCard {
         SectionTitle("Documents", "Select outstanding documents to record a signed handover or request confirmation.")
         if (documents.isEmpty()) Text("No document requirements are configured.", color = AdultSafeMuted)
         documents.forEach { doc ->
             Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                if (doc.state == "required") {
+                if (doc.key in requiredSelection) {
                     Checkbox(checked = doc.key in selected, onCheckedChange = { yes ->
                         if (yes) selected.add(doc.key) else selected.remove(doc.key)
                     })
                 }
                 Column(Modifier.weight(1f)) {
                     Text(doc.label)
-                    Text(doc.state.replace("_", " "), color = AdultSafeMuted, fontSize = 12.sp)
+                    Text(if (doc.key in notRequired) "Not required" else if (doc.state == "signed") "Acknowledged" else "Required · awaiting handover", color = AdultSafeMuted, fontSize = 12.sp)
                 }
                 if (doc.state != "signed") {
                     Checkbox(checked = doc.key in notRequired, enabled = canRequirements, onCheckedChange = { yes ->
@@ -589,7 +590,8 @@ private fun DocumentsEditCard(
         OutlinedButton(onClick = { onRequest(selected.toList()) }, enabled = !busy && canRequest && selected.isNotEmpty(),
             modifier = Modifier.fillMaxWidth()) { Text("Create confirmation link") }
         if (!canSign) Text("Document recording is not allowed for your account.", color = AdultSafeMuted)
-        if (outstanding.isEmpty()) Text("No required documents awaiting handover.", color = AdultSafeMuted)
+        if (requiredSelection.isEmpty()) Text("No required documents awaiting handover. Untick Not required and save requirements to enable handover.", color = AdultSafeMuted)
+        else if (selected.isEmpty()) Text("Select a required document using its left checkbox to enable handover or confirmation.", color = AdultSafeMuted)
     }
 }
 

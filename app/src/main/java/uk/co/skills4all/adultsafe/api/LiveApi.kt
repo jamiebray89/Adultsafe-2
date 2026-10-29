@@ -215,6 +215,10 @@ object LiveApi {
         }
         combined
     }
+    suspend fun acknowledgement(base: String, token: String, id: String, index: Int): JSONObject = withContext(Dispatchers.IO) {
+        require(index >= 0) { "Invalid acknowledgement index." }
+        request(base, token, "/people/" + id + "/documents/acknowledgement/" + index)
+    }
     suspend fun metadata(base: String, token: String): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/settings/meta")
     }

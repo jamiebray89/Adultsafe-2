@@ -207,7 +207,13 @@ object LiveApi {
         result
     }
     suspend fun history(base: String, token: String, id: String): JSONArray = withContext(Dispatchers.IO) {
-        request(base, token, "/people/" + id + "/documents/history").optJSONArray("history") ?: JSONArray()
+        val payload = request(base, token, "/people/" + id + "/documents/history")
+        val combined = JSONArray()
+        for (field in listOf("history", "compliance_history")) {
+            val rows = payload.optJSONArray(field) ?: continue
+            for (index in 0 until rows.length()) combined.put(rows.optJSONObject(index))
+        }
+        combined
     }
     suspend fun metadata(base: String, token: String): JSONObject = withContext(Dispatchers.IO) {
         request(base, token, "/settings/meta")

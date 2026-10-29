@@ -103,7 +103,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
         finally { busy = false }
     }
 
-    fun update(task: suspend () -> Unit, onSuccess: () -> Unit = {}) {
+    fun update(onSuccess: () -> Unit = {}, task: suspend () -> Unit) {
         if (busy) return
         busy = true
         error = null
@@ -126,12 +126,12 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
             confirmButton = {
                 TextButton(enabled = !busy && dbsDraft != null, onClick = {
                     val draft = dbsDraft ?: return@TextButton
-                    update({ LiveApi.updateDbs(url, token, person.id, draft) }) {
+                    update(onSuccess = {
                         dbsDirty = false
                         val next = pendingNavigation
                         pendingNavigation = null
                         next?.invoke()
-                    }
+                    }) { LiveApi.updateDbs(url, token, person.id, draft) }
                 }) { Text("Save changes") }
             },
             dismissButton = {
@@ -200,7 +200,7 @@ fun LivePersonScreen(person: LivePerson, session: AppSession, onBack: () -> Unit
                 item {
                     val record = dbs
                     if (record != null && person.personType == "volunteer") DbsEditCard(record, busy, canEditDbs, onDirty = { dirty, draft -> dbsDirty = dirty; dbsDraft = draft }, onSave = { changes ->
-                        update({ LiveApi.updateDbs(url, token, person.id, changes) }) { dbsDirty = false }
+                        update(onSuccess = { dbsDirty = false }) { LiveApi.updateDbs(url, token, person.id, changes) }
                     })
                 }
                 item {
